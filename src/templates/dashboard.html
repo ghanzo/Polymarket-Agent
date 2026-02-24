@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polymarket Paper Trading</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+            background: #0a0a0f;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        .header {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border-bottom: 1px solid #2a2a4a;
+            padding: 20px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h1 { font-size: 20px; color: #fff; font-weight: 600; }
+        .header h1 span { color: #7c5cfc; }
+        .header-right { display: flex; align-items: center; gap: 16px; }
+        .status-badge {
+            padding: 4px 12px; border-radius: 12px; font-size: 12px;
+            font-weight: 600; text-transform: uppercase;
+        }
+        .status-running { background: #1a3a1a; color: #4ade80; border: 1px solid #2d5a2d; }
+        .status-waiting { background: #1a2a3a; color: #60a5fa; border: 1px solid #2d4a6a; }
+        .status-starting { background: #3a3a1a; color: #facc15; border: 1px solid #5a5a2d; }
+        .live-dot {
+            width: 8px; height: 8px; background: #4ade80; border-radius: 50%;
+            display: inline-block; margin-right: 6px; animation: pulse 2s infinite;
+        }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+        .container { padding: 24px 32px; max-width: 1400px; margin: 0 auto; }
+        .positive { color: #4ade80; }
+        .negative { color: #f87171; }
+        .neutral { color: #888; }
+
+        /* Leaderboard */
+        .leaderboard {
+            background: linear-gradient(135deg, #12121f 0%, #1a1a30 100%);
+            border: 1px solid #2a2a4a;
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+        .leaderboard h2 {
+            font-size: 16px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 2px; color: #7c5cfc; margin-bottom: 20px;
+        }
+        .leaderboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 16px;
+        }
+        .trader-card {
+            background: #0a0a14;
+            border: 1px solid #2a2a4a;
+            border-radius: 12px;
+            padding: 20px;
+            position: relative;
+            transition: border-color 0.2s;
+        }
+        .trader-card:hover { border-color: #7c5cfc; }
+        .trader-card.rank-1 { border-color: #fbbf24; }
+        .trader-card.rank-2 { border-color: #94a3b8; }
+        .trader-card.rank-3 { border-color: #b45309; }
+        .rank-badge {
+            position: absolute; top: 12px; right: 12px;
+            width: 28px; height: 28px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 13px; font-weight: 800;
+        }
+        .rank-1 .rank-badge { background: #fbbf2422; color: #fbbf24; }
+        .rank-2 .rank-badge { background: #94a3b822; color: #94a3b8; }
+        .rank-3 .rank-badge { background: #b4530922; color: #b45309; }
+        .rank-4 .rank-badge { background: #44444422; color: #666; }
+        .trader-name {
+            font-size: 18px; font-weight: 700; color: #fff; margin-bottom: 12px;
+            text-transform: uppercase; letter-spacing: 1px;
+        }
+        .trader-name .model-sub { font-size: 10px; color: #666; font-weight: 400; letter-spacing: 0; text-transform: none; }
+        .trader-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .trader-stat .label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 1px; }
+        .trader-stat .value { font-size: 20px; font-weight: 700; color: #fff; }
+        .trader-stat .value.sm { font-size: 15px; }
+        .roi-bar {
+            margin-top: 12px; height: 4px; background: #1a1a2e; border-radius: 2px; overflow: hidden;
+        }
+        .roi-bar-fill { height: 100%; border-radius: 2px; transition: width 0.5s; }
+
+        /* Sections */
+        .section {
+            background: #12121f; border: 1px solid #2a2a4a; border-radius: 12px;
+            margin-bottom: 24px; overflow: hidden;
+        }
+        .section-header {
+            padding: 16px 20px; border-bottom: 1px solid #2a2a4a;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .section-header h2 {
+            font-size: 14px; font-weight: 600; text-transform: uppercase;
+            letter-spacing: 1px; color: #aaa;
+        }
+        .badge {
+            background: #7c5cfc22; color: #7c5cfc; padding: 2px 10px;
+            border-radius: 10px; font-size: 12px; font-weight: 600;
+        }
+        table { width: 100%; border-collapse: collapse; }
+        th {
+            text-align: left; padding: 10px 16px; font-size: 11px; color: #666;
+            text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid #1a1a2e;
+        }
+        td { padding: 12px 16px; font-size: 13px; border-bottom: 1px solid #1a1a2e; }
+        tr:hover { background: #1a1a2e; }
+        .side-yes { color: #4ade80; font-weight: 700; }
+        .side-no { color: #f87171; font-weight: 700; }
+        .trader-tag {
+            font-size: 10px; padding: 2px 8px; border-radius: 8px;
+            font-weight: 600; text-transform: uppercase;
+        }
+        .tag-claude { background: #7c5cfc22; color: #7c5cfc; }
+        .tag-grok { background: #f4364c22; color: #f4364c; }
+        .tag-gemini { background: #4285f422; color: #4285f4; }
+        .tag-ensemble { background: #fbbf2422; color: #fbbf24; }
+
+        /* Analysis log */
+        .analysis-item {
+            padding: 12px 20px; border-bottom: 1px solid #1a1a2e; font-size: 13px;
+        }
+        .analysis-item:hover { background: #1a1a2e; }
+        .analysis-item .rec { font-weight: 700; display: inline-block; min-width: 80px; }
+        .analysis-item .reasoning { color: #888; font-size: 12px; margin-top: 4px; line-height: 1.4; }
+        .rec-buy-yes { color: #4ade80; }
+        .rec-buy-no { color: #f87171; }
+        .rec-skip { color: #555; }
+
+        .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+        .empty-state { padding: 40px 20px; text-align: center; color: #555; font-size: 13px; }
+        .info-bar {
+            display: flex; gap: 24px; margin-bottom: 24px; font-size: 12px; color: #666;
+        }
+        .info-bar span { display: flex; align-items: center; gap: 6px; }
+        @media (max-width: 900px) {
+            .two-col { grid-template-columns: 1fr; }
+            .container { padding: 16px; }
+            .leaderboard-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1><span>POLY</span>MARKET Paper Trading</h1>
+        <div class="header-right">
+            <span style="font-size: 11px; color: #555;"><span class="live-dot"></span>Auto-refresh 15s</span>
+            <span class="status-badge status-{{ sim.status }}">{{ sim.status }}</span>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="info-bar">
+            <span>Cycle: {{ sim.cycle_count }}</span>
+            <span>Markets scanned: {{ sim.markets_scanned }}</span>
+            <span>Sizing: Quarter-Kelly</span>
+            <span>Max bet: {{ "%.0f"|format(config.max_bet_pct * 100) }}%</span>
+            {% if sim.last_error %}<span style="color: #f87171;">Error: {{ sim.last_error[:60] }}</span>{% endif %}
+        </div>
+
+        <!-- LEADERBOARD -->
+        <div class="leaderboard">
+            <h2>Model Leaderboard</h2>
+            <div class="leaderboard-grid">
+                {% for p in portfolios %}
+                <div class="trader-card rank-{{ loop.index }}">
+                    <div class="rank-badge">#{{ loop.index }}</div>
+                    <div class="trader-name">
+                        {{ p.trader_id }}
+                        <div class="model-sub">
+                            {% if p.trader_id == 'claude' %}Claude Opus 4
+                            {% elif p.trader_id == 'grok' %}Grok 3
+                            {% elif p.trader_id == 'gemini' %}Gemini 2.5 Pro
+                            {% elif p.trader_id == 'ensemble' %}All Models Combined
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="trader-stats">
+                        <div class="trader-stat">
+                            <div class="label">Portfolio Value</div>
+                            <div class="value">${{ "%.2f"|format(p.portfolio_value) }}</div>
+                        </div>
+                        <div class="trader-stat">
+                            <div class="label">Total P&L</div>
+                            <div class="value {{ 'positive' if p.total_pnl >= 0 else 'negative' }}">
+                                ${{ "%+.2f"|format(p.total_pnl) }}
+                            </div>
+                        </div>
+                        <div class="trader-stat">
+                            <div class="label">Win Rate</div>
+                            <div class="value sm">{{ "%.0f"|format(p.win_rate * 100) }}%
+                                <span style="font-size: 11px; color: #666;">({{ p.wins }}W/{{ p.losses }}L)</span>
+                            </div>
+                        </div>
+                        <div class="trader-stat">
+                            <div class="label">ROI</div>
+                            <div class="value sm {{ 'positive' if p.roi >= 0 else 'negative' }}">
+                                {{ "%+.1f"|format(p.roi) }}%
+                            </div>
+                        </div>
+                    </div>
+                    <div class="roi-bar">
+                        {% set bar_pct = [[(p.roi + 50), 0]|max, 100]|min %}
+                        <div class="roi-bar-fill" style="width: {{ bar_pct }}%; background: {{ '#4ade80' if p.roi >= 0 else '#f87171' }};"></div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- OPEN POSITIONS -->
+        <div class="section">
+            <div class="section-header">
+                <h2>Open Positions</h2>
+                <span class="badge">{{ open_bets|length }} active</span>
+            </div>
+            {% if open_bets %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Trader</th>
+                        <th>Market</th>
+                        <th>Side</th>
+                        <th>Amount</th>
+                        <th>Entry</th>
+                        <th>Current</th>
+                        <th>P&L</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for bet in open_bets %}
+                    <tr>
+                        <td><span class="trader-tag tag-{{ bet.trader_id }}">{{ bet.trader_id }}</span></td>
+                        <td>{{ bet.market_question[:55] }}{% if bet.market_question|length > 55 %}...{% endif %}</td>
+                        <td class="side-{{ bet.side.value|lower }}">{{ bet.side.value }}</td>
+                        <td>${{ "%.2f"|format(bet.amount) }}</td>
+                        <td>{{ "%.3f"|format(bet.entry_price) }}</td>
+                        <td>{{ "%.3f"|format(bet.current_price or 0) }}</td>
+                        <td class="{{ 'positive' if bet.unrealized_pnl >= 0 else 'negative' }}">
+                            ${{ "%+.2f"|format(bet.unrealized_pnl) }}
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state">No open positions. Waiting for AI models to find edges...</div>
+            {% endif %}
+        </div>
+
+        <div class="two-col">
+            <!-- CLOSED BETS -->
+            <div class="section">
+                <div class="section-header">
+                    <h2>Resolved Bets</h2>
+                    <span class="badge">{{ closed_bets|length }}</span>
+                </div>
+                {% if closed_bets %}
+                <table>
+                    <thead><tr><th>Trader</th><th>Market</th><th>Result</th><th>P&L</th></tr></thead>
+                    <tbody>
+                    {% for bet in closed_bets %}
+                        <tr>
+                            <td><span class="trader-tag tag-{{ bet.trader_id }}">{{ bet.trader_id }}</span></td>
+                            <td>{{ bet.market_question[:40] }}{% if bet.market_question|length > 40 %}...{% endif %}</td>
+                            <td class="{{ 'positive' if bet.status.value == 'WON' else 'negative' }}">{{ bet.status.value }}</td>
+                            <td class="{{ 'positive' if bet.pnl >= 0 else 'negative' }}">${{ "%+.2f"|format(bet.pnl) }}</td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <div class="empty-state">No resolved bets yet.</div>
+                {% endif %}
+            </div>
+
+            <!-- AI ANALYSIS LOG -->
+            <div class="section">
+                <div class="section-header">
+                    <h2>AI Analysis Log</h2>
+                    <span class="badge">Latest {{ analyses|length }}</span>
+                </div>
+                {% if analyses %}
+                <div style="max-height: 500px; overflow-y: auto;">
+                {% for a in analyses %}
+                    <div class="analysis-item">
+                        <span class="trader-tag tag-{{ a.trader_id }}">{{ a.trader_id }}</span>
+                        <span class="rec rec-{{ a.recommendation|lower|replace('_', '-') }}">
+                            {{ a.recommendation }}
+                        </span>
+                        {% if a.confidence > 0 %}
+                        <span style="color: #aaa;">{{ "%.0f"|format(a.confidence * 100) }}%</span>
+                        {% endif %}
+                        {% if a.estimated_probability %}
+                        <span style="color: #666; font-size: 11px;">est: {{ "%.0f"|format(a.estimated_probability * 100) }}%</span>
+                        {% endif %}
+                        <div class="reasoning">{{ a.reasoning[:250] }}{% if a.reasoning|length > 250 %}...{% endif %}</div>
+                    </div>
+                {% endfor %}
+                </div>
+                {% else %}
+                <div class="empty-state">No analyses yet. First cycle starting soon...</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <script>setTimeout(() => location.reload(), 15000);</script>
+</body>
+</html>

@@ -1,0 +1,63 @@
+services:
+  app:
+    build: .
+    container_name: polymarket-app
+    env_file: .env
+    volumes:
+      - ./src:/app/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  dashboard:
+    build: .
+    container_name: polymarket-dashboard
+    env_file: .env
+    volumes:
+      - ./src:/app/src
+    ports:
+      - "8000:8000"
+    command: ["python", "-m", "uvicorn", "src.dashboard:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: polymarket-db
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-polymarket}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-polymarket}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-polymarket}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: polymarket-redis
+    volumes:
+      - redisdata:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+  redisdata:
