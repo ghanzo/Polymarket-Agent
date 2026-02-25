@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import re
 import time
 from abc import ABC, abstractmethod
 from collections import Counter
@@ -31,6 +32,7 @@ ANALYSIS_PROMPT = """You are an expert prediction market trader. Your job is to 
 - **End date**: {end_date}
 {price_history_section}
 {momentum_section}
+{order_book_section}
 {web_context_section}
 {category_instructions}
 
@@ -60,6 +62,7 @@ COT_STEP1_PROMPT = """You are an expert prediction market analyst.
 - **Time remaining**: {time_remaining}
 {price_history_section}
 {momentum_section}
+{order_book_section}
 {web_context_section}
 {category_instructions}
 
@@ -76,9 +79,14 @@ COT_STEP2_PROMPT = """You are an expert prediction market analyst.
 
 ## Market
 - **Question**: {question}
+- **Description**: {description}
 - **Current YES price**: {midpoint} (market's implied probability: {implied_pct}%)
 - **Time remaining**: {time_remaining}
+{price_history_section}
+{momentum_section}
+{order_book_section}
 {web_context_section}
+{category_instructions}
 
 ## The Case FOR YES:
 {yes_argument}
@@ -96,9 +104,14 @@ COT_STEP3_PROMPT = """You are an expert prediction market trader. Your job is to
 
 ## Market
 - **Question**: {question}
+- **Description**: {description}
 - **Current YES price**: {midpoint} (market's implied probability: {implied_pct}%)
 - **Volume**: ${volume} | **Liquidity**: ${liquidity}
 - **Time remaining**: {time_remaining}
+{momentum_section}
+{order_book_section}
+{web_context_section}
+{category_instructions}
 
 ## Case FOR YES:
 {yes_argument}
@@ -235,11 +248,32 @@ def web_search(query: str, num_results: int = 5) -> list[dict]:
         return []
 
 
+def _build_search_query(market: Market) -> str:
+    """Build an optimized search query from a market question.
+
+    Strips common question prefixes and adds temporal context for
+    time-sensitive queries.
+    """
+    query = market.question.strip()
+    # Strip common question prefixes that add noise to searches
+    prefixes = ["Will the ", "Will ", "Is the ", "Is ", "Does the ", "Does ",
+                 "Has the ", "Has ", "Are the ", "Are ", "Can the ", "Can "]
+    for prefix in prefixes:
+        if query.startswith(prefix):
+            query = query[len(prefix):]
+            break
+    # Add current year for temporal context
+    current_year = str(datetime.now(timezone.utc).year)
+    if current_year not in query:
+        query = f"{query} {current_year}"
+    return query
+
+
 def _build_web_context(market: Market) -> str:
     """Search the web for context relevant to a market question."""
     if not config.BRAVE_API_KEY:
         return ""
-    results = web_search(market.question, num_results=5)
+    results = web_search(_build_search_query(market), num_results=5)
     if not results:
         return ""
     lines = ["- **Recent news context** (from web search):"]
@@ -283,6 +317,23 @@ def _format_price_history(history: list[dict] | None) -> str:
     return "\n".join(lines)
 
 
+def _format_order_book(order_book: dict | None) -> str:
+    if not order_book:
+        return ""
+    bids = order_book.get("bids", [])
+    asks = order_book.get("asks", [])
+    if not bids and not asks:
+        return ""
+    bid_depth = sum(float(b.get("size", 0)) for b in bids)
+    ask_depth = sum(float(a.get("size", 0)) for a in asks)
+    total = bid_depth + ask_depth
+    if total == 0:
+        return ""
+    imbalance = (bid_depth - ask_depth) / total
+    direction = "buy pressure" if imbalance > 0.1 else "sell pressure" if imbalance < -0.1 else "balanced"
+    return f"- **Order book**: bid depth ${bid_depth:,.0f} vs ask depth ${ask_depth:,.0f} ({direction}, imbalance {imbalance:+.1%})"
+
+
 def _format_momentum(price_history: list[dict] | None) -> str:
     """Compute price momentum from history and return a one-line summary."""
     if not price_history or len(price_history) < 2:
@@ -298,6 +349,34 @@ def _format_momentum(price_history: list[dict] | None) -> str:
     else:
         direction = "stable"
     return f"- **Price momentum**: {momentum:+.1%} over recent history ({direction})"
+
+
+def _extract_resolution_info(description: str) -> str:
+    """Extract resolution criteria from a market description.
+
+    Scans for common resolution-related phrases and returns the relevant
+    sentences prominently. If no structured criteria found, returns the
+    full description (up to 2000 chars).
+    """
+    if not description:
+        return "No description available."
+    description = description[:2000]
+    keywords = [
+        "resolves yes if", "resolves no if", "resolves yes when",
+        "resolution source", "resolution criteria", "resolution details",
+        "according to", "will resolve to", "this market resolves",
+        "the resolution", "resolved based on", "resolves to yes",
+        "resolves to no", "resolves as",
+    ]
+    sentences = re.split(r'(?<=[.!?])\s+', description)
+    resolution_sentences = [
+        s for s in sentences
+        if any(kw in s.lower() for kw in keywords)
+    ]
+    if resolution_sentences:
+        criteria = " ".join(resolution_sentences)
+        return f"[Resolution criteria]: {criteria}\n\n[Full description]: {description}"
+    return description
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +398,45 @@ class Analyzer(ABC):
 
     MAX_RETRIES = 2
     RETRY_DELAYS = [5, 15]  # seconds
+
+    def _system_prompt(self) -> str:
+        """Return a system-level instruction for calibrated prediction analysis."""
+        base = (
+            "You are a calibrated prediction market analyst. Your probability estimates "
+            "must be well-calibrated: when you say 70%, events should happen roughly 70% "
+            "of the time.\n\n"
+            "Key principles:\n"
+            "- Markets are often efficient. Require strong, specific evidence to deviate "
+            "significantly from the current market price.\n"
+            "- Anchor to base rates for similar events before adjusting for specifics.\n"
+            "- Distinguish between 'I don't know' (stay near market price) and 'I have an "
+            "informational edge' (deviate with conviction).\n"
+            "- Avoid overconfidence: a 90% estimate means you'd be wrong 1 in 10 times.\n"
+            "- Account for the possibility that you are missing information the market has."
+        )
+        # Optionally inject calibration data from DB
+        if config.USE_CALIBRATION:
+            try:
+                from src import db
+                trader_id = getattr(self, "TRADER_ID", None)
+                if trader_id:
+                    cal = db.get_calibration(trader_id)
+                    if cal and cal.get("total_bets", 0) >= config.MIN_CALIBRATION_SAMPLES:
+                        cal_lines = ["\n\nYour recent calibration data:"]
+                        for bucket, stats in sorted(cal.get("buckets", {}).items()):
+                            predicted = stats.get("avg_predicted", 0)
+                            actual = stats.get("actual_rate", 0)
+                            n = stats.get("count", 0)
+                            if n > 0:
+                                cal_lines.append(
+                                    f"- When you predict {bucket}: actual outcome rate is "
+                                    f"{actual:.0%} (n={n})"
+                                )
+                        if len(cal_lines) > 1:
+                            base += "\n".join(cal_lines)
+            except Exception:
+                pass  # Calibration data is optional
+        return base
 
     def _call_model_with_retry(self, prompt: str) -> str:
         """Call model with retry for transient errors (503, 429, etc)."""
@@ -363,14 +481,9 @@ class Analyzer(ABC):
         step2 = COT_STEP2_PROMPT.format(**ctx, yes_argument=yes_argument)
         no_argument = self._call_model_with_retry(step2)
 
-        # Step 3: Synthesize — returns JSON
+        # Step 3: Synthesize — returns JSON (full context + arguments)
         step3 = COT_STEP3_PROMPT.format(
-            question=ctx["question"],
-            midpoint=ctx["midpoint"],
-            implied_pct=ctx["implied_pct"],
-            volume=ctx["volume"],
-            liquidity=ctx["liquidity"],
-            time_remaining=ctx["time_remaining"],
+            **ctx,
             yes_argument=yes_argument,
             no_argument=no_argument,
         )
@@ -382,7 +495,7 @@ class Analyzer(ABC):
         category = classify_market(market.question) if config.USE_MARKET_SPECIALIZATION else "general"
         return {
             "question": market.question,
-            "description": (market.description or "No description available.")[:500],
+            "description": _extract_resolution_info(market.description),
             "midpoint": f"{midpoint:.3f}",
             "implied_pct": f"{midpoint * 100:.1f}",
             "volume": market.volume,
@@ -390,6 +503,7 @@ class Analyzer(ABC):
             "time_remaining": _format_time_remaining(market.end_date),
             "price_history_section": _format_price_history(market.price_history),
             "momentum_section": _format_momentum(market.price_history),
+            "order_book_section": _format_order_book(market.order_book),
             "web_context_section": web_context,
             "category_instructions": CATEGORY_INSTRUCTIONS.get(category, ""),
         }
@@ -400,7 +514,7 @@ class Analyzer(ABC):
         category = classify_market(market.question) if config.USE_MARKET_SPECIALIZATION else "general"
         return ANALYSIS_PROMPT.format(
             question=market.question,
-            description=(market.description or "No description available.")[:500],
+            description=_extract_resolution_info(market.description),
             outcomes=", ".join(market.outcomes),
             midpoint=f"{midpoint:.3f}",
             implied_pct=f"{midpoint * 100:.1f}",
@@ -411,6 +525,7 @@ class Analyzer(ABC):
             end_date=market.end_date or "Unknown",
             price_history_section=history_section,
             momentum_section=_format_momentum(market.price_history),
+            order_book_section=_format_order_book(market.order_book),
             web_context_section=web_context,
             category_instructions=CATEGORY_INSTRUCTIONS.get(category, ""),
         )
@@ -452,17 +567,18 @@ class Analyzer(ABC):
 class ClaudeAnalyzer(Analyzer):
     """Analyzer using Anthropic Claude API."""
 
-    MODEL = "claude-opus-4-20250514"
     TRADER_ID = "claude"
 
     def __init__(self, api_key: str | None = None):
         import anthropic
+        self.MODEL = config.CLAUDE_MODEL
         self.client = anthropic.Anthropic(api_key=api_key or config.ANTHROPIC_API_KEY)
 
     def _call_model(self, prompt: str) -> str:
         response = self.client.messages.create(
             model=self.MODEL,
             max_tokens=1024,
+            system=self._system_prompt(),
             messages=[{"role": "user", "content": prompt}],
         )
         return response.content[0].text
@@ -474,17 +590,18 @@ class ClaudeAnalyzer(Analyzer):
 class GeminiAnalyzer(Analyzer):
     """Analyzer using Google Gemini API."""
 
-    MODEL = "gemini-2.5-pro"
     TRADER_ID = "gemini"
 
     def __init__(self, api_key: str | None = None):
         from google import genai
+        self.MODEL = config.GEMINI_MODEL
         self.client = genai.Client(api_key=api_key or config.GEMINI_API_KEY)
 
     def _call_model(self, prompt: str) -> str:
+        full_prompt = f"[System Instructions]\n{self._system_prompt()}\n\n[User Query]\n{prompt}"
         response = self.client.models.generate_content(
             model=self.MODEL,
-            contents=prompt,
+            contents=full_prompt,
         )
         return response.text
 
@@ -495,11 +612,11 @@ class GeminiAnalyzer(Analyzer):
 class GrokAnalyzer(Analyzer):
     """Analyzer using xAI Grok API (OpenAI-compatible)."""
 
-    MODEL = "grok-4-1-fast-reasoning"
     TRADER_ID = "grok"
 
     def __init__(self, api_key: str | None = None):
         from openai import OpenAI
+        self.MODEL = config.GROK_MODEL
         self.client = OpenAI(
             api_key=api_key or config.XAI_API_KEY,
             base_url="https://api.x.ai/v1",
@@ -509,7 +626,10 @@ class GrokAnalyzer(Analyzer):
         response = self.client.chat.completions.create(
             model=self.MODEL,
             max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": self._system_prompt()},
+                {"role": "user", "content": prompt},
+            ],
         )
         return response.choices[0].message.content
 
@@ -531,6 +651,10 @@ class EnsembleAnalyzer(Analyzer):
     def _model_id(self) -> str:
         return "ensemble"
 
+    def aggregate(self, market: Market, results: list[Analysis]) -> Analysis:
+        """Aggregate pre-computed per-model results (no re-calling)."""
+        return self._aggregate_results(market, results)
+
     def analyze(self, market: Market, web_context: str = "") -> Analysis:
         results: list[Analysis] = []
         for analyzer in self.analyzers:
@@ -540,6 +664,9 @@ class EnsembleAnalyzer(Analyzer):
             except Exception as e:
                 print(f"  [WARN] {analyzer.__class__.__name__} failed: {e}")
 
+        return self._aggregate_results(market, results)
+
+    def _aggregate_results(self, market: Market, results: list[Analysis]) -> Analysis:
         if not results:
             return Analysis(
                 market_id=market.id, model="ensemble",

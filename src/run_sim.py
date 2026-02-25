@@ -46,6 +46,9 @@ def run():
     print("\n[5/6] Running per-model analysis & betting...")
     analyzers = get_individual_analyzers()
 
+    # Cache per-model results for ensemble reuse
+    market_results: dict[str, list] = {}  # market_id -> list[Analysis]
+
     # Run each model independently
     for analyzer in analyzers:
         tid = analyzer.TRADER_ID
@@ -55,6 +58,7 @@ def run():
         for market in markets:
             try:
                 analysis = analyzer.analyze(market, web_contexts.get(market.id, ""))
+                market_results.setdefault(market.id, []).append(analysis)
                 db.save_analysis(
                     tid, market.id, analysis.model,
                     analysis.recommendation.value,
@@ -74,7 +78,7 @@ def run():
         sim.check_resolutions()
         print(f"  {bets} bets placed")
 
-    # Ensemble
+    # Ensemble — aggregate cached results (no re-calling models)
     if len(analyzers) >= 2:
         ensemble = EnsembleAnalyzer(analyzers)
         sim = Simulator(cli, "ensemble")
@@ -82,7 +86,10 @@ def run():
         bets = 0
         for market in markets:
             try:
-                analysis = ensemble.analyze(market, web_contexts.get(market.id, ""))
+                cached = market_results.get(market.id, [])
+                if not cached:
+                    continue
+                analysis = ensemble.aggregate(market, cached)
                 db.save_analysis(
                     "ensemble", market.id, analysis.model,
                     analysis.recommendation.value,

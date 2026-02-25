@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from src.cli import PolymarketCLI, CLIError
+from src.config import config
 from src.models import Market
 
 
@@ -33,20 +34,20 @@ class MarketScanner:
             except CLIError:
                 break
 
-        # Score and sort
-        scored = [(self._score(m), m) for m in raw_markets]
-        scored.sort(key=lambda x: x[0], reverse=True)
-
-        # Enrich top candidates with live pricing
+        # Enrich with live pricing, then score (so spread is available for scoring)
         enriched = []
-        for _, market in scored:
-            if len(enriched) >= max_markets:
-                break
+        for market in raw_markets:
             market = self._enrich(market)
             if market.midpoint is not None and 0.01 < market.midpoint < 0.99:
+                # Reject markets with spreads too wide to trade profitably
+                if market.spread is not None and market.spread > config.SIM_MAX_SPREAD:
+                    continue
                 enriched.append(market)
 
-        return enriched
+        # Score and sort
+        enriched.sort(key=lambda m: self._score(m), reverse=True)
+
+        return enriched[:max_markets]
 
     def _passes_filter(self, market: Market) -> bool:
         """Fast filter on raw market data."""
@@ -121,6 +122,13 @@ class MarketScanner:
                 score += 0.5
                 break
 
+        # Spread penalty — tight spreads are better
+        if market.spread is not None:
+            if market.spread < 0.03:
+                score += 1.0
+            elif market.spread > 0.10:
+                score -= 1.0
+
         return score
 
     def _enrich(self, market: Market) -> Market:
@@ -138,6 +146,15 @@ class MarketScanner:
         try:
             spread = self.cli.clob_spread(token)
             market.spread = float(spread.get("spread", 0))
+        except (CLIError, ValueError, TypeError):
+            pass
+
+        try:
+            book = self.cli.clob_book(token)
+            if isinstance(book, dict):
+                bids = book.get("bids", [])
+                asks = book.get("asks", [])
+                market.order_book = {"bids": bids[:5], "asks": asks[:5]}
         except (CLIError, ValueError, TypeError):
             pass
 

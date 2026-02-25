@@ -219,19 +219,12 @@ def run_backtest(
 
         hist_mid = get_historical_midpoint(cli, token)
         if hist_mid is None:
-            # Fall back: use the average of outcome prices to estimate a pre-close price
-            # This is imperfect but better than nothing
-            try:
-                prices = raw["_parsed_prices"]
-                # For a market that closed YES=1.0, the pre-close price was likely 0.7-0.9
-                # We can't know exactly, so use 0.65 as a reasonable "before the final move" estimate
-                yes_final = float(prices[0])
-                if yes_final > 0.5:
-                    hist_mid = 0.65  # Market that resolved YES was probably trading ~65%
-                else:
-                    hist_mid = 0.35  # Market that resolved NO was probably trading ~35%
-            except (IndexError, ValueError, TypeError):
-                continue
+            # Skip markets without historical prices to avoid lookahead bias.
+            # The previous fallback used outcome-correlated prices (0.65 for YES,
+            # 0.35 for NO), which leaked resolution info into the "historical"
+            # price and inflated backtest accuracy.
+            logger.info("Skipping %s — no historical price available", market.question[:50])
+            continue
 
         market.midpoint = hist_mid
         market.active = True  # Pretend it's still active for the analyzer
@@ -274,14 +267,16 @@ def run_backtest(
                     summary.predictions_made += 1
 
                     # Was the prediction correct?
+                    assumed_spread = config.BACKTEST_ASSUMED_SPREAD
+                    half_spread = assumed_spread / 2.0
                     if analysis.recommendation == Recommendation.BUY_YES:
                         was_correct = yes_won
                         side = Side.YES
-                        entry_price = hist_mid
+                        entry_price = hist_mid + half_spread
                     else:
                         was_correct = not yes_won
                         side = Side.NO
-                        entry_price = 1.0 - hist_mid
+                        entry_price = (1.0 - hist_mid) + half_spread
 
                     if was_correct:
                         summary.correct += 1
@@ -290,7 +285,7 @@ def run_backtest(
                         summary.incorrect += 1
                         icon = "x"
 
-                    # Theoretical Kelly P&L
+                    # Theoretical Kelly P&L (spread-adjusted)
                     from src.models import kelly_size
                     bet_amount = kelly_size(
                         estimated_prob=analysis.estimated_probability,
@@ -299,6 +294,7 @@ def run_backtest(
                         bankroll=bankroll,
                         max_bet_pct=config.SIM_MAX_BET_PCT,
                         fraction=0.25,
+                        spread=assumed_spread,
                     )
                     if bet_amount >= 1.0:
                         shares = bet_amount / entry_price

@@ -1,14 +1,34 @@
-from datetime import datetime
+from contextlib import contextmanager
+from datetime import datetime, timezone
 
 import psycopg2
 import psycopg2.extras
+from psycopg2.pool import ThreadedConnectionPool
 
 from src.config import config
 from src.models import Bet, BetStatus, Portfolio, Side, TRADER_IDS
 
+_pool: ThreadedConnectionPool | None = None
 
+
+def _get_pool() -> ThreadedConnectionPool:
+    global _pool
+    if _pool is None or _pool.closed:
+        _pool = ThreadedConnectionPool(
+            minconn=2, maxconn=10,
+            dsn=config.database_url,
+        )
+    return _pool
+
+
+@contextmanager
 def get_conn():
-    return psycopg2.connect(config.database_url)
+    pool = _get_pool()
+    conn = pool.getconn()
+    try:
+        yield conn
+    finally:
+        pool.putconn(conn)
 
 
 def init_db():
@@ -230,7 +250,7 @@ def resolve_bet(bet_id: int, won: bool, exit_price: float):
             cur.execute("""
                 UPDATE bets SET status = %s, exit_price = %s, pnl = %s, resolved_at = %s
                 WHERE id = %s
-            """, (status.value, exit_price, pnl, datetime.utcnow(), bet_id))
+            """, (status.value, exit_price, pnl, datetime.now(timezone.utc), bet_id))
 
             win_inc = 1 if won else 0
             loss_inc = 0 if won else 1
@@ -242,6 +262,33 @@ def resolve_bet(bet_id: int, won: bool, exit_price: float):
                     realized_pnl = realized_pnl + %s
                 WHERE trader_id = %s
             """, (payout, win_inc, loss_inc, pnl, row["trader_id"]))
+        conn.commit()
+
+
+def close_bet(bet_id: int, exit_price: float):
+    """Early exit at market price (not binary resolution)."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM bets WHERE id = %s", (bet_id,))
+            row = cur.fetchone()
+            if not row:
+                return
+            shares = row["shares"]
+            cost = row["amount"]
+            payout = shares * exit_price
+            pnl = payout - cost
+            won = pnl > 0
+            cur.execute("""
+                UPDATE bets SET status=%s, exit_price=%s, pnl=%s, resolved_at=%s
+                WHERE id=%s
+            """, (BetStatus.EXITED.value, exit_price, pnl, datetime.now(timezone.utc), bet_id))
+            update_col = "wins" if won else "losses"
+            cur.execute(f"""
+                UPDATE portfolio
+                SET balance = balance + %s, realized_pnl = realized_pnl + %s,
+                    {update_col} = {update_col} + 1
+                WHERE trader_id = %s
+            """, (payout, pnl, row["trader_id"]))
         conn.commit()
 
 

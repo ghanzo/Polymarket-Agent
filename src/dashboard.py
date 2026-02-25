@@ -121,15 +121,25 @@ def _run_cycle():
 
     logger.info("All models finished analysis in parallel")
 
-    # 5. Run ensemble (only if not paused and 2+ models active)
+    # 5. Run ensemble — aggregate cached results (no re-calling models)
     if len(analyzers) >= 2 and "ensemble" not in paused:
         ensemble = EnsembleAnalyzer(analyzers)
         all_analyses["ensemble"] = []
         sim_state["traders"]["ensemble"]["status"] = "analyzing"
+
+        # Build per-market results from individual model analyses
+        market_results: dict[str, list] = {}
+        for tid, results in all_analyses.items():
+            for market, analysis in results:
+                market_results.setdefault(market.id, []).append(analysis)
+
         for market in markets:
             sim_state["traders"]["ensemble"]["current_market"] = market.question[:50]
             try:
-                analysis = ensemble.analyze(market, web_contexts.get(market.id, ""))
+                cached = market_results.get(market.id, [])
+                if not cached:
+                    continue
+                analysis = ensemble.aggregate(market, cached)
                 all_analyses["ensemble"].append((market, analysis))
                 sim_state["traders"]["ensemble"]["markets_analyzed"] += 1
                 db.save_analysis(

@@ -25,16 +25,17 @@ class Simulator:
 
         portfolio = db.get_portfolio(self.trader_id)
         midpoint = market.midpoint or 0.5
+        half_spread = (market.spread or 0.0) / 2.0
 
-        # Determine side and entry price
+        # Determine side and entry price (at ask, not midpoint)
         if analysis.recommendation == Recommendation.BUY_YES:
             side = Side.YES
             token_id = market.token_ids[0] if market.token_ids else ""
-            entry_price = midpoint
+            entry_price = midpoint + half_spread
         else:
             side = Side.NO
             token_id = market.token_ids[1] if len(market.token_ids) > 1 else ""
-            entry_price = 1.0 - midpoint
+            entry_price = (1.0 - midpoint) + half_spread
 
         if not token_id or entry_price <= 0.001:
             return None
@@ -92,8 +93,22 @@ class Simulator:
                 mid = self.cli.clob_midpoint(bet.token_id)
                 price = float(mid.get("midpoint", 0))
                 if price > 0:
-                    bet.current_price = price
-                    db.update_bet_price(bet.id, price)
+                    # Convert YES midpoint to the bet's side value
+                    if bet.side == Side.NO:
+                        current_value = 1.0 - price
+                    else:
+                        current_value = price
+                    bet.current_price = current_value
+                    db.update_bet_price(bet.id, current_value)
+                    # Check stop-loss / take-profit
+                    if bet.entry_price > 0:
+                        pnl_pct = (current_value - bet.entry_price) / bet.entry_price
+                        if pnl_pct <= -config.SIM_STOP_LOSS:
+                            db.close_bet(bet.id, current_value)
+                            continue
+                        if pnl_pct >= config.SIM_TAKE_PROFIT:
+                            db.close_bet(bet.id, current_value)
+                            continue
             except (CLIError, ValueError, TypeError):
                 pass
         return open_bets

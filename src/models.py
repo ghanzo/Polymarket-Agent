@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 
@@ -21,6 +21,7 @@ class BetStatus(str, Enum):
     OPEN = "OPEN"
     WON = "WON"
     LOST = "LOST"
+    EXITED = "EXITED"
 
 
 TRADER_IDS = ["claude", "grok", "gemini", "ensemble"]
@@ -41,6 +42,7 @@ class Market:
     midpoint: float | None = None
     spread: float | None = None
     price_history: list[dict] | None = None
+    order_book: dict | None = None
 
     @classmethod
     def from_cli(cls, data: dict) -> Market:
@@ -70,7 +72,7 @@ class Analysis:
     confidence: float
     estimated_probability: float
     reasoning: str
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
@@ -89,7 +91,7 @@ class Bet:
     current_price: float | None = None
     exit_price: float | None = None
     pnl: float = 0.0
-    placed_at: datetime = field(default_factory=datetime.utcnow)
+    placed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     resolved_at: datetime | None = None
 
     @property

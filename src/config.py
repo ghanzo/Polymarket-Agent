@@ -20,6 +20,11 @@ class Config:
     GEMINI_API_KEY: str | None = os.getenv("GEMINI_API_KEY") or None
     XAI_API_KEY: str | None = os.getenv("XAI_API_KEY") or None
 
+    # AI Model Names (configurable via env vars)
+    CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-opus-4-20250514")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
+    GROK_MODEL: str = os.getenv("GROK_MODEL", "grok-4-1-fast-reasoning")
+
     # Web Search (Brave Search API — free tier: 2000 queries/month)
     BRAVE_API_KEY: str | None = os.getenv("BRAVE_API_KEY") or None
 
@@ -40,6 +45,10 @@ class Config:
     SIM_MAX_BET_PCT: float = float(os.getenv("SIM_MAX_BET_PCT", "0.05"))
     SIM_MIN_CONFIDENCE: float = float(os.getenv("SIM_MIN_CONFIDENCE", "0.7"))
     SIM_MIN_EDGE: float = float(os.getenv("SIM_MIN_EDGE", "0.05"))
+    SIM_STOP_LOSS: float = float(os.getenv("SIM_STOP_LOSS", "0.25"))
+    SIM_TAKE_PROFIT: float = float(os.getenv("SIM_TAKE_PROFIT", "0.50"))
+    SIM_MAX_SPREAD: float = float(os.getenv("SIM_MAX_SPREAD", "0.08"))
+    BACKTEST_ASSUMED_SPREAD: float = float(os.getenv("BACKTEST_ASSUMED_SPREAD", "0.04"))
 
     @property
     def database_url(self) -> str:
