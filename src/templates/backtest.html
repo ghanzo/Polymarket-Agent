@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Backtest Results — Polymarket Paper Trading</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+            background: #0a0a0f;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        .header {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border-bottom: 1px solid #2a2a4a;
+            padding: 20px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h1 { font-size: 20px; color: #fff; font-weight: 600; }
+        .header h1 span { color: #7c5cfc; }
+        .header-right { display: flex; align-items: center; gap: 16px; }
+        .header-right a {
+            color: #7c5cfc; text-decoration: none; font-size: 13px;
+            padding: 6px 16px; border: 1px solid #7c5cfc; border-radius: 8px;
+        }
+        .header-right a:hover { background: #7c5cfc22; }
+        .container { padding: 24px 32px; max-width: 1400px; margin: 0 auto; }
+        .positive { color: #4ade80; }
+        .negative { color: #f87171; }
+
+        /* Summary Cards */
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .summary-card {
+            background: linear-gradient(135deg, #12121f 0%, #1a1a30 100%);
+            border: 1px solid #2a2a4a;
+            border-radius: 12px;
+            padding: 20px;
+            position: relative;
+        }
+        .summary-card.rank-1 { border-color: #fbbf24; }
+        .summary-card.rank-2 { border-color: #94a3b8; }
+        .summary-card.rank-3 { border-color: #b45309; }
+        .summary-card .trader-name {
+            font-size: 18px; font-weight: 700; color: #fff;
+            text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px;
+        }
+        .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .stat .label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 1px; }
+        .stat .value { font-size: 20px; font-weight: 700; color: #fff; }
+        .stat .value.sm { font-size: 15px; }
+
+        /* Brier gauge */
+        .brier-bar {
+            margin-top: 12px; height: 6px; background: #1a1a2e;
+            border-radius: 3px; overflow: hidden; position: relative;
+        }
+        .brier-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+        .brier-label {
+            font-size: 10px; color: #666; margin-top: 4px;
+            display: flex; justify-content: space-between;
+        }
+
+        /* Section */
+        .section {
+            background: #12121f; border: 1px solid #2a2a4a; border-radius: 12px;
+            margin-bottom: 24px; overflow: hidden;
+        }
+        .section-header {
+            padding: 16px 20px; border-bottom: 1px solid #2a2a4a;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .section-header h2 {
+            font-size: 14px; font-weight: 600; text-transform: uppercase;
+            letter-spacing: 1px; color: #aaa;
+        }
+        .badge {
+            background: #7c5cfc22; color: #7c5cfc; padding: 2px 10px;
+            border-radius: 10px; font-size: 12px; font-weight: 600;
+        }
+        table { width: 100%; border-collapse: collapse; }
+        th {
+            text-align: left; padding: 10px 16px; font-size: 11px; color: #666;
+            text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid #1a1a2e;
+        }
+        td { padding: 12px 16px; font-size: 13px; border-bottom: 1px solid #1a1a2e; }
+        tr:hover { background: #1a1a2e; }
+        .trader-tag {
+            font-size: 10px; padding: 2px 8px; border-radius: 8px;
+            font-weight: 600; text-transform: uppercase;
+        }
+        .tag-claude { background: #7c5cfc22; color: #7c5cfc; }
+        .tag-grok { background: #f4364c22; color: #f4364c; }
+        .tag-gemini { background: #4285f422; color: #4285f4; }
+        .tag-ensemble { background: #fbbf2422; color: #fbbf24; }
+
+        .empty-state { padding: 40px 20px; text-align: center; color: #555; font-size: 13px; }
+        .info-bar {
+            display: flex; gap: 24px; margin-bottom: 24px; font-size: 12px; color: #666;
+        }
+        .run-selector {
+            background: #0a0a14; border: 1px solid #2a2a4a; border-radius: 8px;
+            color: #e0e0e0; padding: 6px 12px; font-size: 12px;
+            font-family: inherit;
+        }
+        @media (max-width: 900px) {
+            .summary-grid { grid-template-columns: 1fr; }
+            .container { padding: 16px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1><span>POLY</span>MARKET Backtest Results</h1>
+        <div class="header-right">
+            <a href="/">Live Dashboard</a>
+        </div>
+    </div>
+
+    <div class="container">
+        {% if not latest_run %}
+        <div class="empty-state">
+            <p style="font-size: 16px; margin-bottom: 8px;">No backtest results yet.</p>
+            <p>Run: <code style="background: #1a1a2e; padding: 4px 8px; border-radius: 4px;">docker compose run --rm app python -m src.backtester</code></p>
+        </div>
+        {% else %}
+
+        <div class="info-bar">
+            <span>Run: {{ latest_run.id }}</span>
+            <span>Range: last {{ latest_run.days }} days</span>
+            <span>Markets tested: {{ latest_run.markets_tested }}</span>
+            <span>{{ latest_run.created_at.strftime('%Y-%m-%d %H:%M') if latest_run.created_at else '' }}</span>
+            {% if runs|length > 1 %}
+            <span>
+                Previous runs:
+                {% for run in runs[1:] %}
+                <a href="/api/backtest/{{ run.id }}" style="color: #7c5cfc; font-size: 11px;">{{ run.id[:8] }}</a>
+                {% endfor %}
+            </span>
+            {% endif %}
+        </div>
+
+        <!-- MODEL COMPARISON -->
+        <div class="summary-grid">
+            {% for s in summary %}
+            <div class="summary-card rank-{{ loop.index }}">
+                <div class="trader-name">{{ s.trader_id }}</div>
+                <div class="stat-grid">
+                    <div class="stat">
+                        <div class="label">Accuracy</div>
+                        <div class="value {{ 'positive' if s.predictions > 0 and s.correct / s.predictions > 0.5 else 'negative' }}">
+                            {% if s.predictions > 0 %}{{ "%.0f"|format(s.correct / s.predictions * 100) }}%{% else %}N/A{% endif %}
+                        </div>
+                    </div>
+                    <div class="stat">
+                        <div class="label">Theoretical P&L</div>
+                        <div class="value {{ 'positive' if s.total_pnl >= 0 else 'negative' }}">
+                            ${{ "%+.2f"|format(s.total_pnl) }}
+                        </div>
+                    </div>
+                    <div class="stat">
+                        <div class="label">Predictions</div>
+                        <div class="value sm">{{ s.predictions }}
+                            <span style="font-size: 11px; color: #666;">({{ s.correct }}W/{{ s.predictions - s.correct }}L)</span>
+                        </div>
+                    </div>
+                    <div class="stat">
+                        <div class="label">Brier Score</div>
+                        <div class="value sm {{ 'positive' if s.brier_score and s.brier_score < 0.2 else 'negative' if s.brier_score and s.brier_score > 0.3 else '' }}">
+                            {{ "%.4f"|format(s.brier_score) if s.brier_score else "N/A" }}
+                        </div>
+                    </div>
+                </div>
+                <div class="brier-bar">
+                    {% set brier_pct = [[(1.0 - (s.brier_score or 0.5) / 0.5) * 100, 0]|max, 100]|min %}
+                    <div class="brier-bar-fill" style="width: {{ brier_pct }}%; background: {{ '#4ade80' if brier_pct > 60 else '#facc15' if brier_pct > 40 else '#f87171' }};"></div>
+                </div>
+                <div class="brier-label">
+                    <span>Random (0.25)</span>
+                    <span>Perfect (0.0)</span>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <!-- DETAILED RESULTS -->
+        <div class="section">
+            <div class="section-header">
+                <h2>Individual Predictions</h2>
+                <span class="badge">{{ results|length }} total</span>
+            </div>
+            {% if results %}
+            <div style="max-height: 700px; overflow-y: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Model</th>
+                        <th>Market</th>
+                        <th>Rec</th>
+                        <th>Est. Prob</th>
+                        <th>Mkt Price</th>
+                        <th>Actual</th>
+                        <th>Correct?</th>
+                        <th>P&L</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for r in results %}
+                    {% if r.recommendation != 'SKIP' %}
+                    <tr>
+                        <td><span class="trader-tag tag-{{ r.trader_id }}">{{ r.trader_id }}</span></td>
+                        <td>{{ r.market_question[:50] }}{% if r.market_question|length > 50 %}...{% endif %}</td>
+                        <td class="{{ 'positive' if 'YES' in r.recommendation else 'negative' }}">
+                            {{ r.recommendation }}
+                        </td>
+                        <td>{{ "%.0f"|format(r.estimated_probability * 100) }}%</td>
+                        <td>{{ "%.0f"|format(r.market_price * 100) }}%</td>
+                        <td class="{{ 'positive' if r.actual_outcome_yes else 'negative' }}">
+                            {{ "YES" if r.actual_outcome_yes else "NO" }}
+                        </td>
+                        <td class="{{ 'positive' if r.was_correct else 'negative' }}">
+                            {{ "Correct" if r.was_correct else "Wrong" }}
+                        </td>
+                        <td class="{{ 'positive' if r.theoretical_pnl >= 0 else 'negative' }}">
+                            ${{ "%+.2f"|format(r.theoretical_pnl) }}
+                        </td>
+                    </tr>
+                    {% endif %}
+                {% endfor %}
+                </tbody>
+            </table>
+            </div>
+            {% else %}
+            <div class="empty-state">No prediction results available.</div>
+            {% endif %}
+        </div>
+
+        {% endif %}
+    </div>
+</body>
+</html>

@@ -20,6 +20,14 @@ class Config:
     GEMINI_API_KEY: str | None = os.getenv("GEMINI_API_KEY") or None
     XAI_API_KEY: str | None = os.getenv("XAI_API_KEY") or None
 
+    # Web Search (Brave Search API — free tier: 2000 queries/month)
+    BRAVE_API_KEY: str | None = os.getenv("BRAVE_API_KEY") or None
+
+    # Paused traders (comma-separated, e.g. "claude,ensemble" to skip expensive models)
+    PAUSED_TRADERS: list[str] = [
+        t.strip() for t in (os.getenv("PAUSED_TRADERS", "") or "").split(",") if t.strip()
+    ]
+
     # Simulation settings
     SIM_STARTING_BALANCE: float = float(os.getenv("SIM_STARTING_BALANCE", "1000"))
     SIM_MAX_BET_PCT: float = float(os.getenv("SIM_MAX_BET_PCT", "0.05"))

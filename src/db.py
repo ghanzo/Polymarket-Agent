@@ -57,6 +57,33 @@ def init_db():
                     created_at TIMESTAMP NOT NULL DEFAULT NOW()
                 );
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS backtest_results (
+                    id SERIAL PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    trader_id TEXT NOT NULL,
+                    market_id TEXT NOT NULL,
+                    market_question TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    recommendation TEXT NOT NULL,
+                    estimated_probability DOUBLE PRECISION NOT NULL,
+                    confidence DOUBLE PRECISION NOT NULL,
+                    actual_outcome_yes BOOLEAN NOT NULL,
+                    market_price DOUBLE PRECISION NOT NULL,
+                    was_correct BOOLEAN NOT NULL,
+                    theoretical_pnl DOUBLE PRECISION NOT NULL,
+                    reasoning TEXT,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS backtest_runs (
+                    id TEXT PRIMARY KEY,
+                    days INTEGER NOT NULL,
+                    markets_tested INTEGER NOT NULL,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+            """)
             # Initialize portfolios for each trader
             for tid in TRADER_IDS:
                 cur.execute(
@@ -215,6 +242,70 @@ def get_recent_analyses(trader_id: str | None = None, limit: int = 50) -> list[d
                     "SELECT * FROM analysis_log ORDER BY created_at DESC LIMIT %s",
                     (limit,),
                 )
+            return [dict(r) for r in cur.fetchall()]
+
+
+def save_backtest_run(run_id: str, days: int, markets_tested: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO backtest_runs (id, days, markets_tested) VALUES (%s, %s, %s)",
+                (run_id, days, markets_tested),
+            )
+        conn.commit()
+
+
+def save_backtest_result(run_id: str, trader_id: str, market_id: str, market_question: str,
+                         model: str, recommendation: str, estimated_probability: float,
+                         confidence: float, actual_outcome_yes: bool, market_price: float,
+                         was_correct: bool, theoretical_pnl: float, reasoning: str):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO backtest_results (run_id, trader_id, market_id, market_question,
+                    model, recommendation, estimated_probability, confidence,
+                    actual_outcome_yes, market_price, was_correct, theoretical_pnl, reasoning)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (run_id, trader_id, market_id, market_question, model, recommendation,
+                  estimated_probability, confidence, actual_outcome_yes, market_price,
+                  was_correct, theoretical_pnl, reasoning))
+        conn.commit()
+
+
+def get_backtest_runs() -> list[dict]:
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM backtest_runs ORDER BY created_at DESC LIMIT 10")
+            return [dict(r) for r in cur.fetchall()]
+
+
+def get_backtest_results(run_id: str) -> list[dict]:
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM backtest_results WHERE run_id = %s ORDER BY trader_id, market_question",
+                (run_id,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
+def get_backtest_summary(run_id: str) -> list[dict]:
+    """Get per-model summary stats for a backtest run."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    trader_id,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN recommendation != 'SKIP' THEN 1 ELSE 0 END) as predictions,
+                    SUM(CASE WHEN was_correct AND recommendation != 'SKIP' THEN 1 ELSE 0 END) as correct,
+                    SUM(theoretical_pnl) as total_pnl,
+                    AVG(POWER(estimated_probability - CASE WHEN actual_outcome_yes THEN 1.0 ELSE 0.0 END, 2)) as brier_score
+                FROM backtest_results
+                WHERE run_id = %s
+                GROUP BY trader_id
+                ORDER BY SUM(theoretical_pnl) DESC
+            """, (run_id,))
             return [dict(r) for r in cur.fetchall()]
 
 

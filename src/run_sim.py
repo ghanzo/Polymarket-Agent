@@ -6,7 +6,7 @@ Usage:
 """
 
 from src.cli import PolymarketCLI
-from src.analyzer import get_individual_analyzers, EnsembleAnalyzer
+from src.analyzer import get_individual_analyzers, EnsembleAnalyzer, _build_web_context
 from src.scanner import MarketScanner
 from src.simulator import Simulator
 from src.models import Recommendation
@@ -34,7 +34,16 @@ def run():
     if len(markets) > 10:
         print(f"  ... and {len(markets) - 10} more")
 
-    print("\n[4/5] Running per-model analysis & betting...")
+    print("\n[4/6] Fetching web context...")
+    web_contexts = {}
+    for market in markets:
+        ctx = _build_web_context(market)
+        web_contexts[market.id] = ctx
+        if ctx:
+            print(f"  Web context for: {market.question[:50]}")
+    print(f"  Enriched {sum(1 for c in web_contexts.values() if c)} markets with web search")
+
+    print("\n[5/6] Running per-model analysis & betting...")
     analyzers = get_individual_analyzers()
 
     # Run each model independently
@@ -45,7 +54,7 @@ def run():
         bets = 0
         for market in markets:
             try:
-                analysis = analyzer.analyze(market)
+                analysis = analyzer.analyze(market, web_contexts.get(market.id, ""))
                 db.save_analysis(
                     tid, market.id, analysis.model,
                     analysis.recommendation.value,
@@ -73,7 +82,7 @@ def run():
         bets = 0
         for market in markets:
             try:
-                analysis = ensemble.analyze(market)
+                analysis = ensemble.analyze(market, web_contexts.get(market.id, ""))
                 db.save_analysis(
                     "ensemble", market.id, analysis.model,
                     analysis.recommendation.value,
@@ -91,7 +100,7 @@ def run():
         print(f"  {bets} bets placed")
 
     # Leaderboard
-    print("\n[5/5] LEADERBOARD")
+    print("\n[6/6] LEADERBOARD")
     print("  " + "-" * 56)
     print(f"  {'Trader':<12} {'Value':>10} {'P&L':>10} {'Bets':>6} {'Win%':>6}")
     print("  " + "-" * 56)

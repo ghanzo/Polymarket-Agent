@@ -1,9 +1,14 @@
 import json
+import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 
+import httpx
+
 from src.config import config
 from src.models import Analysis, Market, Recommendation
+
+logger = logging.getLogger("analyzer")
 
 ANALYSIS_PROMPT = """You are an expert prediction market trader. Your job is to find mispriced markets and bet on them.
 
@@ -18,6 +23,7 @@ ANALYSIS_PROMPT = """You are an expert prediction market trader. Your job is to 
 - **Time remaining**: {time_remaining}
 - **End date**: {end_date}
 {price_history_section}
+{web_context_section}
 
 ## Instructions
 1. Based on your knowledge of current events, historical patterns, and base rates, estimate the TRUE probability that the YES outcome occurs.
@@ -34,6 +40,44 @@ ANALYSIS_PROMPT = """You are an expert prediction market trader. Your job is to 
 
 Respond with ONLY valid JSON:
 {{"recommendation": "BUY_YES" or "BUY_NO" or "SKIP", "confidence": 0.0 to 1.0, "estimated_probability": 0.0 to 1.0, "reasoning": "your analysis"}}"""
+
+
+def web_search(query: str, num_results: int = 5) -> list[dict]:
+    """Search the web using Brave Search API. Returns list of {title, url, snippet}."""
+    if not config.BRAVE_API_KEY:
+        return []
+    try:
+        resp = httpx.get(
+            "https://api.search.brave.com/res/v1/web/search",
+            params={"q": query, "count": num_results, "text_decorations": False},
+            headers={"X-Subscription-Token": config.BRAVE_API_KEY, "Accept": "application/json"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        results = []
+        for item in resp.json().get("web", {}).get("results", []):
+            results.append({
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "snippet": item.get("description", ""),
+            })
+        return results
+    except Exception as e:
+        logger.warning("Web search failed for '%s': %s", query, e)
+        return []
+
+
+def _build_web_context(market: Market) -> str:
+    """Search the web for context relevant to a market question."""
+    if not config.BRAVE_API_KEY:
+        return ""
+    results = web_search(market.question, num_results=5)
+    if not results:
+        return ""
+    lines = ["- **Recent news context** (from web search):"]
+    for r in results:
+        lines.append(f"  - [{r['title']}]({r['url']}): {r['snippet'][:200]}")
+    return "\n".join(lines)
 
 
 def _format_time_remaining(end_date: str | None) -> str:
@@ -71,10 +115,10 @@ class Analyzer(ABC):
     """Base class for market analyzers."""
 
     @abstractmethod
-    def analyze(self, market: Market) -> Analysis:
+    def analyze(self, market: Market, web_context: str = "") -> Analysis:
         pass
 
-    def _build_prompt(self, market: Market) -> str:
+    def _build_prompt(self, market: Market, web_context: str = "") -> str:
         midpoint = market.midpoint or 0.5
         history_section = _format_price_history(market.price_history)
         return ANALYSIS_PROMPT.format(
@@ -89,6 +133,7 @@ class Analyzer(ABC):
             time_remaining=_format_time_remaining(market.end_date),
             end_date=market.end_date or "Unknown",
             price_history_section=history_section,
+            web_context_section=web_context,
         )
 
     def _parse_response(self, text: str, market_id: str, model: str) -> Analysis:
@@ -132,8 +177,8 @@ class ClaudeAnalyzer(Analyzer):
         import anthropic
         self.client = anthropic.Anthropic(api_key=api_key or config.ANTHROPIC_API_KEY)
 
-    def analyze(self, market: Market) -> Analysis:
-        prompt = self._build_prompt(market)
+    def analyze(self, market: Market, web_context: str = "") -> Analysis:
+        prompt = self._build_prompt(market, web_context)
         response = self.client.messages.create(
             model=self.MODEL,
             max_tokens=1024,
@@ -153,8 +198,8 @@ class GeminiAnalyzer(Analyzer):
         from google import genai
         self.client = genai.Client(api_key=api_key or config.GEMINI_API_KEY)
 
-    def analyze(self, market: Market) -> Analysis:
-        prompt = self._build_prompt(market)
+    def analyze(self, market: Market, web_context: str = "") -> Analysis:
+        prompt = self._build_prompt(market, web_context)
         response = self.client.models.generate_content(
             model=self.MODEL,
             contents=prompt,
@@ -166,7 +211,7 @@ class GeminiAnalyzer(Analyzer):
 class GrokAnalyzer(Analyzer):
     """Analyzer using xAI Grok API (OpenAI-compatible)."""
 
-    MODEL = "grok-3"
+    MODEL = "grok-4-1-fast-reasoning"
     TRADER_ID = "grok"
 
     def __init__(self, api_key: str | None = None):
@@ -176,8 +221,8 @@ class GrokAnalyzer(Analyzer):
             base_url="https://api.x.ai/v1",
         )
 
-    def analyze(self, market: Market) -> Analysis:
-        prompt = self._build_prompt(market)
+    def analyze(self, market: Market, web_context: str = "") -> Analysis:
+        prompt = self._build_prompt(market, web_context)
         response = self.client.chat.completions.create(
             model=self.MODEL,
             max_tokens=1024,
@@ -195,11 +240,11 @@ class EnsembleAnalyzer(Analyzer):
     def __init__(self, analyzers: list[Analyzer]):
         self.analyzers = analyzers
 
-    def analyze(self, market: Market) -> Analysis:
+    def analyze(self, market: Market, web_context: str = "") -> Analysis:
         results: list[Analysis] = []
         for analyzer in self.analyzers:
             try:
-                result = analyzer.analyze(market)
+                result = analyzer.analyze(market, web_context)
                 results.append(result)
             except Exception as e:
                 print(f"  [WARN] {analyzer.__class__.__name__} failed: {e}")
@@ -254,24 +299,34 @@ class EnsembleAnalyzer(Analyzer):
 
 
 def get_individual_analyzers() -> list[Analyzer]:
-    """Return all available individual analyzers (not ensemble)."""
+    """Return all available individual analyzers (not ensemble).
+
+    Set PAUSED_TRADERS in config to skip expensive models.
+    """
+    paused = set(config.PAUSED_TRADERS)
     analyzers: list[Analyzer] = []
-    if config.ANTHROPIC_API_KEY:
+    if config.ANTHROPIC_API_KEY and "claude" not in paused:
         try:
             analyzers.append(ClaudeAnalyzer())
             print("[OK] Claude Opus 4 loaded")
         except Exception as e:
             print(f"[WARN] Claude init failed: {e}")
-    if config.GEMINI_API_KEY:
+    elif "claude" in paused:
+        print("[PAUSED] Claude — skipping to save costs")
+    if config.GEMINI_API_KEY and "gemini" not in paused:
         try:
             analyzers.append(GeminiAnalyzer())
             print("[OK] Gemini 2.5 Pro loaded")
         except Exception as e:
             print(f"[WARN] Gemini init failed: {e}")
-    if config.XAI_API_KEY:
+    elif "gemini" in paused:
+        print("[PAUSED] Gemini — skipping to save costs")
+    if config.XAI_API_KEY and "grok" not in paused:
         try:
             analyzers.append(GrokAnalyzer())
-            print("[OK] Grok 3 loaded")
+            print("[OK] Grok 4.1 Reasoning loaded")
         except Exception as e:
             print(f"[WARN] Grok init failed: {e}")
+    elif "grok" in paused:
+        print("[PAUSED] Grok — skipping to save costs")
     return analyzers

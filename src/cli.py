@@ -69,8 +69,7 @@ class PolymarketCLI:
             "--offset", str(offset),
             "--order", order,
         ]
-        if active:
-            args.extend(["--active", "true"])
+        args.extend(["--active", "true" if active else "false"])
         return self._run(*args)
 
     def markets_search(self, query: str, limit: int = 10) -> Any:

@@ -156,6 +156,7 @@
     <div class="header">
         <h1><span>POLY</span>MARKET Paper Trading</h1>
         <div class="header-right">
+            <a href="/backtest" style="color: #7c5cfc; text-decoration: none; font-size: 12px; padding: 4px 12px; border: 1px solid #7c5cfc; border-radius: 8px;">Backtest</a>
             <span style="font-size: 11px; color: #555;"><span class="live-dot"></span>Auto-refresh 15s</span>
             <span class="status-badge status-{{ sim.status }}">{{ sim.status }}</span>
         </div>
@@ -181,7 +182,7 @@
                         {{ p.trader_id }}
                         <div class="model-sub">
                             {% if p.trader_id == 'claude' %}Claude Opus 4
-                            {% elif p.trader_id == 'grok' %}Grok 3
+                            {% elif p.trader_id == 'grok' %}Grok 4.1 Reasoning
                             {% elif p.trader_id == 'gemini' %}Gemini 2.5 Pro
                             {% elif p.trader_id == 'ensemble' %}All Models Combined
                             {% endif %}
