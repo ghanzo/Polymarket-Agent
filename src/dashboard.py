@@ -8,6 +8,7 @@ View: http://localhost:8000
 import asyncio
 import logging
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -85,17 +86,17 @@ def _run_cycle():
         if web_contexts[market.id]:
             logger.info("Web context fetched for: %s", market.question[:50])
 
-    # 4. Run each model independently
-    all_analyses = {}
-    for analyzer in analyzers:
+    # 4. Run each model in parallel
+    def _analyze_all_markets(analyzer):
+        """Run one analyzer across all markets. Returns (trader_id, results_list)."""
         tid = analyzer.TRADER_ID
         sim_state["traders"][tid]["status"] = "analyzing"
-        all_analyses[tid] = []
-
+        results = []
         for market in markets:
+            sim_state["traders"][tid]["current_market"] = market.question[:50]
             try:
                 analysis = analyzer.analyze(market, web_contexts.get(market.id, ""))
-                all_analyses[tid].append((market, analysis))
+                results.append((market, analysis))
                 sim_state["traders"][tid]["markets_analyzed"] += 1
                 db.save_analysis(
                     tid, market.id, analysis.model,
@@ -106,9 +107,19 @@ def _run_cycle():
             except Exception as e:
                 sim_state["traders"][tid]["errors"] += 1
                 logger.warning("[%s] Error on %s: %s", tid, market.question[:40], e)
-
         sim_state["traders"][tid]["status"] = "idle"
+        sim_state["traders"][tid]["current_market"] = ""
         sim_state["traders"][tid]["last_action"] = datetime.now(timezone.utc).isoformat()
+        return tid, results
+
+    all_analyses = {}
+    with ThreadPoolExecutor(max_workers=len(analyzers)) as pool:
+        futures = {pool.submit(_analyze_all_markets, a): a for a in analyzers}
+        for future in as_completed(futures):
+            tid, results = future.result()
+            all_analyses[tid] = results
+
+    logger.info("All models finished analysis in parallel")
 
     # 5. Run ensemble (only if not paused and 2+ models active)
     if len(analyzers) >= 2 and "ensemble" not in paused:
@@ -116,6 +127,7 @@ def _run_cycle():
         all_analyses["ensemble"] = []
         sim_state["traders"]["ensemble"]["status"] = "analyzing"
         for market in markets:
+            sim_state["traders"]["ensemble"]["current_market"] = market.question[:50]
             try:
                 analysis = ensemble.analyze(market, web_contexts.get(market.id, ""))
                 all_analyses["ensemble"].append((market, analysis))
@@ -130,6 +142,7 @@ def _run_cycle():
                 sim_state["traders"]["ensemble"]["errors"] += 1
                 logger.warning("[ensemble] Error on %s: %s", market.question[:40], e)
         sim_state["traders"]["ensemble"]["status"] = "idle"
+        sim_state["traders"]["ensemble"]["current_market"] = ""
         sim_state["traders"]["ensemble"]["last_action"] = datetime.now(timezone.utc).isoformat()
 
     # 6. Place bets for each trader
@@ -237,6 +250,7 @@ async def dashboard(request: Request):
             "status": "paused" if tid in paused_set else trader_state.get("status", "idle"),
             "last_action": trader_state.get("last_action"),
             "last_action_desc": trader_state.get("last_action_desc", ""),
+            "current_market": trader_state.get("current_market", ""),
             "bets_placed": trader_state.get("bets_placed", 0),
             "errors": trader_state.get("errors", 0),
             "markets_analyzed": trader_state.get("markets_analyzed", 0),

@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 
@@ -296,6 +297,28 @@ class Analyzer(ABC):
         """Return model identifier, e.g. 'grok:grok-4-1-fast-reasoning'."""
         pass
 
+    MAX_RETRIES = 2
+    RETRY_DELAYS = [5, 15]  # seconds
+
+    def _call_model_with_retry(self, prompt: str) -> str:
+        """Call model with retry for transient errors (503, 429, etc)."""
+        last_error = None
+        for attempt in range(1 + self.MAX_RETRIES):
+            try:
+                return self._call_model(prompt)
+            except Exception as e:
+                err_str = str(e)
+                is_transient = any(code in err_str for code in ["503", "429", "UNAVAILABLE", "overloaded", "rate"])
+                if is_transient and attempt < self.MAX_RETRIES:
+                    delay = self.RETRY_DELAYS[attempt]
+                    logger.info("[%s] Transient error (attempt %d/%d), retrying in %ds: %s",
+                                self._model_id(), attempt + 1, self.MAX_RETRIES + 1, delay, err_str[:80])
+                    time.sleep(delay)
+                    last_error = e
+                else:
+                    raise
+        raise last_error
+
     def analyze(self, market: Market, web_context: str = "") -> Analysis:
         """Analyze a market. Uses chain-of-thought if enabled, else single prompt."""
         if config.USE_CHAIN_OF_THOUGHT:
@@ -305,7 +328,7 @@ class Analyzer(ABC):
     def _single_prompt_analyze(self, market: Market, web_context: str = "") -> Analysis:
         """Original single-prompt analysis."""
         prompt = self._build_prompt(market, web_context)
-        text = self._call_model(prompt)
+        text = self._call_model_with_retry(prompt)
         return self._parse_response(text, market.id, self._model_id())
 
     def _chain_of_thought_analyze(self, market: Market, web_context: str = "") -> Analysis:
@@ -314,11 +337,11 @@ class Analyzer(ABC):
 
         # Step 1: Argue YES
         step1 = COT_STEP1_PROMPT.format(**ctx)
-        yes_argument = self._call_model(step1)
+        yes_argument = self._call_model_with_retry(step1)
 
         # Step 2: Argue NO (with YES argument for rebuttal)
         step2 = COT_STEP2_PROMPT.format(**ctx, yes_argument=yes_argument)
-        no_argument = self._call_model(step2)
+        no_argument = self._call_model_with_retry(step2)
 
         # Step 3: Synthesize — returns JSON
         step3 = COT_STEP3_PROMPT.format(
@@ -331,7 +354,7 @@ class Analyzer(ABC):
             yes_argument=yes_argument,
             no_argument=no_argument,
         )
-        final_text = self._call_model(step3)
+        final_text = self._call_model_with_retry(step3)
         return self._parse_response(final_text, market.id, self._model_id())
 
     def _build_cot_context(self, market: Market, web_context: str = "") -> dict:
