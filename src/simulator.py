@@ -39,9 +39,16 @@ class Simulator:
         if not token_id or entry_price <= 0.001:
             return None
 
+        # Apply calibration adjustment if available
+        est_prob = analysis.estimated_probability
+        if config.USE_CALIBRATION:
+            est_prob = db.calibrate_probability(
+                self.trader_id, est_prob, min_samples=config.MIN_CALIBRATION_SAMPLES
+            )
+
         # Kelly criterion bet sizing
         bet_amount = kelly_size(
-            estimated_prob=analysis.estimated_probability,
+            estimated_prob=est_prob,
             market_price=midpoint,
             side=side,
             bankroll=portfolio.balance,

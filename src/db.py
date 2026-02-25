@@ -84,6 +84,45 @@ def init_db():
                     created_at TIMESTAMP NOT NULL DEFAULT NOW()
                 );
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS search_cache (
+                    query_hash TEXT PRIMARY KEY,
+                    query_text TEXT NOT NULL,
+                    results JSONB NOT NULL,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+                    id SERIAL PRIMARY KEY,
+                    trader_id TEXT NOT NULL,
+                    portfolio_value DOUBLE PRECISION NOT NULL,
+                    balance DOUBLE PRECISION NOT NULL,
+                    unrealized_pnl DOUBLE PRECISION NOT NULL,
+                    total_bets INTEGER NOT NULL,
+                    wins INTEGER NOT NULL,
+                    losses INTEGER NOT NULL,
+                    realized_pnl DOUBLE PRECISION NOT NULL,
+                    cycle_number INTEGER NOT NULL,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_snapshots_trader_time
+                    ON portfolio_snapshots (trader_id, created_at);
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS calibration (
+                    trader_id TEXT NOT NULL,
+                    bucket_min DOUBLE PRECISION NOT NULL,
+                    bucket_max DOUBLE PRECISION NOT NULL,
+                    predicted_center DOUBLE PRECISION NOT NULL,
+                    actual_rate DOUBLE PRECISION NOT NULL,
+                    sample_count INTEGER NOT NULL,
+                    computed_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (trader_id, bucket_min)
+                );
+            """)
             # Initialize portfolios for each trader
             for tid in TRADER_IDS:
                 cur.execute(
@@ -245,6 +284,78 @@ def get_recent_analyses(trader_id: str | None = None, limit: int = 50) -> list[d
             return [dict(r) for r in cur.fetchall()]
 
 
+def get_cached_search(query_hash: str, ttl_hours: int = 20) -> list[dict] | None:
+    """Return cached search results if within TTL, else None."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT results FROM search_cache WHERE query_hash = %s AND created_at > NOW() - make_interval(hours := %s)",
+                (query_hash, ttl_hours),
+            )
+            row = cur.fetchone()
+            return row["results"] if row else None
+
+
+def save_cached_search(query_hash: str, query_text: str, results: list[dict]):
+    """Upsert a cached search result."""
+    import json as _json
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO search_cache (query_hash, query_text, results)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (query_hash)
+                DO UPDATE SET results = EXCLUDED.results, created_at = NOW()
+            """, (query_hash, query_text, _json.dumps(results)))
+        conn.commit()
+
+
+def save_calibration(trader_id: str, bucket_min: float, bucket_max: float,
+                     predicted_center: float, actual_rate: float, sample_count: int):
+    """Upsert a calibration bucket for a trader."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO calibration (trader_id, bucket_min, bucket_max, predicted_center, actual_rate, sample_count)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (trader_id, bucket_min)
+                DO UPDATE SET actual_rate = EXCLUDED.actual_rate, sample_count = EXCLUDED.sample_count,
+                              predicted_center = EXCLUDED.predicted_center, computed_at = NOW()
+            """, (trader_id, bucket_min, bucket_max, predicted_center, actual_rate, sample_count))
+        conn.commit()
+
+
+def get_calibration(trader_id: str) -> list[dict]:
+    """Return all calibration buckets for a trader."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT bucket_min, bucket_max, predicted_center, actual_rate, sample_count FROM calibration WHERE trader_id = %s ORDER BY bucket_min",
+                (trader_id,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
+def calibrate_probability(trader_id: str, raw_probability: float, min_samples: int = 5) -> float:
+    """Adjust estimated_probability using historical calibration data.
+
+    Falls back to raw_probability if no calibration data exists.
+    """
+    buckets = get_calibration(trader_id)
+    if not buckets:
+        return raw_probability
+    for bucket in buckets:
+        if bucket["sample_count"] < min_samples:
+            continue
+        if bucket["bucket_min"] <= raw_probability < bucket["bucket_max"]:
+            return bucket["actual_rate"]
+    if raw_probability >= 1.0 and buckets:
+        last = buckets[-1]
+        if last["sample_count"] >= min_samples:
+            return last["actual_rate"]
+    return raw_probability
+
+
 def save_backtest_run(run_id: str, days: int, markets_tested: int):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -306,6 +417,43 @@ def get_backtest_summary(run_id: str) -> list[dict]:
                 GROUP BY trader_id
                 ORDER BY SUM(theoretical_pnl) DESC
             """, (run_id,))
+            return [dict(r) for r in cur.fetchall()]
+
+
+def save_portfolio_snapshot(trader_id: str, portfolio_value: float, balance: float,
+                            unrealized_pnl: float, total_bets: int, wins: int,
+                            losses: int, realized_pnl: float, cycle_number: int):
+    """Save a point-in-time snapshot of a trader's portfolio."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO portfolio_snapshots
+                    (trader_id, portfolio_value, balance, unrealized_pnl,
+                     total_bets, wins, losses, realized_pnl, cycle_number)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (trader_id, portfolio_value, balance, unrealized_pnl,
+                  total_bets, wins, losses, realized_pnl, cycle_number))
+        conn.commit()
+
+
+def get_portfolio_history(trader_id: str | None = None, hours: int = 72) -> list[dict]:
+    """Get portfolio snapshots for charts. Returns all traders if trader_id is None."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if trader_id:
+                cur.execute("""
+                    SELECT trader_id, portfolio_value, created_at
+                    FROM portfolio_snapshots
+                    WHERE trader_id = %s AND created_at > NOW() - make_interval(hours := %s)
+                    ORDER BY created_at
+                """, (trader_id, hours))
+            else:
+                cur.execute("""
+                    SELECT trader_id, portfolio_value, created_at
+                    FROM portfolio_snapshots
+                    WHERE created_at > NOW() - make_interval(hours := %s)
+                    ORDER BY created_at
+                """, (hours,))
             return [dict(r) for r in cur.fetchall()]
 
 

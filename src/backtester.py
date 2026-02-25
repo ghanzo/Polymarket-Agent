@@ -361,7 +361,53 @@ def run_backtest(
     print(f"\n  Brier score: 0.0 = perfect, 0.25 = random coin flip")
     print(f"  Markets tested: {len(test_markets)}")
 
+    # 6. Compute calibration curves from results
+    compute_calibration(summaries)
+
     return summaries
+
+
+CALIBRATION_BUCKETS = [
+    (0.0, 0.1), (0.1, 0.2), (0.2, 0.3), (0.3, 0.4), (0.4, 0.5),
+    (0.5, 0.6), (0.6, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.0),
+]
+MIN_BUCKET_SAMPLES = 5
+
+
+def compute_calibration(summaries: dict[str, BacktestSummary]):
+    """Compute and save per-model calibration data from backtest results."""
+    print("\n  Computing calibration curves...")
+    for trader_id, summary in summaries.items():
+        if not summary.results:
+            continue
+        saved = 0
+        for bucket_min, bucket_max in CALIBRATION_BUCKETS:
+            in_bucket = [
+                r for r in summary.results
+                if bucket_min <= r.estimated_probability < bucket_max
+            ]
+            if len(in_bucket) < MIN_BUCKET_SAMPLES:
+                continue
+            actual_rate = sum(1 for r in in_bucket if r.actual_outcome_yes) / len(in_bucket)
+            bucket_center = (bucket_min + bucket_max) / 2
+            db.save_calibration(
+                trader_id=trader_id,
+                bucket_min=bucket_min,
+                bucket_max=bucket_max,
+                predicted_center=bucket_center,
+                actual_rate=actual_rate,
+                sample_count=len(in_bucket),
+            )
+            saved += 1
+            logger.info(
+                "[calibration] %s %.0f-%.0f%%: predicted=%.0f%% actual=%.0f%% (n=%d)",
+                trader_id, bucket_min * 100, bucket_max * 100,
+                bucket_center * 100, actual_rate * 100, len(in_bucket),
+            )
+        if saved:
+            print(f"  {trader_id}: saved {saved} calibration buckets")
+        else:
+            print(f"  {trader_id}: insufficient data for calibration (need {MIN_BUCKET_SAMPLES}+ samples per bucket)")
 
 
 def main():

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -9,6 +10,10 @@ from src.config import config
 from src.models import Analysis, Market, Recommendation
 
 logger = logging.getLogger("analyzer")
+
+# ---------------------------------------------------------------------------
+# Prompts
+# ---------------------------------------------------------------------------
 
 ANALYSIS_PROMPT = """You are an expert prediction market trader. Your job is to find mispriced markets and bet on them.
 
@@ -24,6 +29,7 @@ ANALYSIS_PROMPT = """You are an expert prediction market trader. Your job is to 
 - **End date**: {end_date}
 {price_history_section}
 {web_context_section}
+{category_instructions}
 
 ## Instructions
 1. Based on your knowledge of current events, historical patterns, and base rates, estimate the TRUE probability that the YES outcome occurs.
@@ -41,11 +47,168 @@ ANALYSIS_PROMPT = """You are an expert prediction market trader. Your job is to 
 Respond with ONLY valid JSON:
 {{"recommendation": "BUY_YES" or "BUY_NO" or "SKIP", "confidence": 0.0 to 1.0, "estimated_probability": 0.0 to 1.0, "reasoning": "your analysis"}}"""
 
+COT_STEP1_PROMPT = """You are an expert prediction market analyst.
+
+## Market
+- **Question**: {question}
+- **Description**: {description}
+- **Current YES price**: {midpoint} (market's implied probability: {implied_pct}%)
+- **Volume**: ${volume} | **Liquidity**: ${liquidity}
+- **Time remaining**: {time_remaining}
+{price_history_section}
+{web_context_section}
+{category_instructions}
+
+## Task: Argue FOR YES
+Build the STRONGEST possible case that YES will occur. Consider:
+- What evidence or trends support YES?
+- What base rates or historical precedents favor YES?
+- What would have to be true for YES to win?
+- What is the upper bound of a reasonable YES probability?
+
+Write 3-5 concise bullet points arguing FOR YES. Be specific and evidence-based."""
+
+COT_STEP2_PROMPT = """You are an expert prediction market analyst.
+
+## Market
+- **Question**: {question}
+- **Current YES price**: {midpoint} (market's implied probability: {implied_pct}%)
+- **Time remaining**: {time_remaining}
+{web_context_section}
+
+## The Case FOR YES:
+{yes_argument}
+
+## Task: Argue FOR NO
+Now build the STRONGEST possible case that NO will occur. Consider:
+- What evidence or trends support NO?
+- What are the base rates for events like this failing?
+- What flaws exist in the YES argument above?
+- What is the lower bound of a reasonable YES probability?
+
+Write 3-5 concise bullet points arguing FOR NO. Be specific and evidence-based."""
+
+COT_STEP3_PROMPT = """You are an expert prediction market trader. Your job is to find mispriced markets.
+
+## Market
+- **Question**: {question}
+- **Current YES price**: {midpoint} (market's implied probability: {implied_pct}%)
+- **Volume**: ${volume} | **Liquidity**: ${liquidity}
+- **Time remaining**: {time_remaining}
+
+## Case FOR YES:
+{yes_argument}
+
+## Case FOR NO:
+{no_argument}
+
+## Task: Synthesize and Decide
+Weigh both arguments carefully. Consider:
+- Which case is stronger, and by how much?
+- Does the market price already reflect the consensus view?
+- Do you have a genuine informational or analytical edge?
+- Only bet when your estimate differs meaningfully from the market price.
+
+Respond with ONLY valid JSON:
+{{"recommendation": "BUY_YES" or "BUY_NO" or "SKIP", "confidence": 0.0 to 1.0, "estimated_probability": 0.0 to 1.0, "reasoning": "your synthesis in 2-3 sentences"}}"""
+
+# ---------------------------------------------------------------------------
+# Market Classification
+# ---------------------------------------------------------------------------
+
+MARKET_CATEGORIES = {
+    "crypto": ["bitcoin", "ethereum", "crypto", "btc", "eth", "solana", "defi",
+               "blockchain", "token", "coinbase", "binance", "altcoin", "memecoin"],
+    "politics": ["president", "election", "trump", "congress", "senate", "governor",
+                 "democrat", "republican", "vote", "ballot", "poll", "impeach",
+                 "supreme court", "legislation", "bill", "veto", "biden", "desantis"],
+    "sports": ["game", "match", "team", "championship", "league", "playoff",
+               "winner", " vs ", "nfl", "nba", "mlb", "nhl", "world cup", "super bowl",
+               "tournament", "season", "points", "goals", "o/u"],
+    "finance": ["stock", "s&p", "nasdaq", "dow", "fed ", "interest rate",
+                "gdp", "inflation", "recession", "treasury", "market cap", "ipo"],
+    "science_tech": [" ai ", "model", "launch", "spacex", "fda", "vaccine", "climate",
+                     "gpt", "nvidia", "apple", "google", "microsoft", "release",
+                     "approval", "drug"],
+}
+
+CATEGORY_INSTRUCTIONS = {
+    "crypto": """
+## Category Guidance: Crypto
+- Focus on technical indicators: momentum, support/resistance levels, recent price action
+- Consider macro conditions: Fed policy, dollar strength, risk-on/risk-off sentiment
+- Account for crypto's high volatility — wide probability intervals are appropriate
+- Base rates: crypto price targets are often missed in both directions""",
+
+    "politics": """
+## Category Guidance: Politics
+- Weight polling averages carefully — consider historical polling bias
+- Apply base rates: incumbents win X% of the time, etc.
+- Consider structural factors over individual events
+- Recent news often causes overreaction — revert to base rates unless change is structural""",
+
+    "sports": """
+## Category Guidance: Sports
+- Focus on recent form (last 5-10 games), not just season averages
+- Head-to-head records and home/away splits matter
+- Account for injury reports and rest days
+- Bookmaker lines are highly efficient — require strong evidence to bet against them""",
+
+    "finance": """
+## Category Guidance: Financial Markets
+- Examine macro indicators and Fed policy trajectory
+- Consider consensus forecasts and how often they prove accurate
+- Look at historical base rates for similar economic milestones
+- Factor in uncertainty already priced into related assets""",
+
+    "science_tech": """
+## Category Guidance: Science/Technology
+- For regulatory/FDA: use historical approval rates by stage
+- For product launches: company track record matters most
+- For AI milestones: progress is faster than expected but slower than press suggests
+- Distinguish official announcements from speculation""",
+
+    "general": "",
+}
+
+
+def classify_market(question: str) -> str:
+    """Classify a market question into a category by keyword matching."""
+    q = question.lower()
+    for category in ["crypto", "politics", "sports", "science_tech", "finance"]:
+        if any(kw in q for kw in MARKET_CATEGORIES[category]):
+            return category
+    return "general"
+
+
+# ---------------------------------------------------------------------------
+# Web Search (with PostgreSQL caching)
+# ---------------------------------------------------------------------------
+
+def _query_hash(query: str) -> str:
+    return hashlib.md5(query.lower().strip().encode()).hexdigest()
+
 
 def web_search(query: str, num_results: int = 5) -> list[dict]:
-    """Search the web using Brave Search API. Returns list of {title, url, snippet}."""
+    """Search the web using Brave API, with PostgreSQL caching.
+
+    Cache TTL defaults to SEARCH_CACHE_TTL_HOURS (20h). Same query within
+    TTL returns stored results without hitting the Brave API.
+    """
     if not config.BRAVE_API_KEY:
         return []
+
+    from src import db
+    qhash = _query_hash(query)
+
+    # Check cache first
+    cached = db.get_cached_search(qhash, ttl_hours=config.SEARCH_CACHE_TTL_HOURS)
+    if cached is not None:
+        logger.debug("Search cache HIT: %s", query[:60])
+        return cached
+
+    # Cache miss — call Brave API
+    logger.info("Search cache MISS — calling Brave API: %s", query[:60])
     try:
         resp = httpx.get(
             "https://api.search.brave.com/res/v1/web/search",
@@ -61,6 +224,7 @@ def web_search(query: str, num_results: int = 5) -> list[dict]:
                 "url": item.get("url", ""),
                 "snippet": item.get("description", ""),
             })
+        db.save_cached_search(qhash, query, results)
         return results
     except Exception as e:
         logger.warning("Web search failed for '%s': %s", query, e)
@@ -79,6 +243,10 @@ def _build_web_context(market: Market) -> str:
         lines.append(f"  - [{r['title']}]({r['url']}): {r['snippet'][:200]}")
     return "\n".join(lines)
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _format_time_remaining(end_date: str | None) -> str:
     if not end_date:
@@ -111,16 +279,81 @@ def _format_price_history(history: list[dict] | None) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Base Analyzer
+# ---------------------------------------------------------------------------
+
 class Analyzer(ABC):
     """Base class for market analyzers."""
 
     @abstractmethod
-    def analyze(self, market: Market, web_context: str = "") -> Analysis:
+    def _call_model(self, prompt: str) -> str:
+        """Send a prompt to the model and return the text response."""
         pass
+
+    @abstractmethod
+    def _model_id(self) -> str:
+        """Return model identifier, e.g. 'grok:grok-4-1-fast-reasoning'."""
+        pass
+
+    def analyze(self, market: Market, web_context: str = "") -> Analysis:
+        """Analyze a market. Uses chain-of-thought if enabled, else single prompt."""
+        if config.USE_CHAIN_OF_THOUGHT:
+            return self._chain_of_thought_analyze(market, web_context)
+        return self._single_prompt_analyze(market, web_context)
+
+    def _single_prompt_analyze(self, market: Market, web_context: str = "") -> Analysis:
+        """Original single-prompt analysis."""
+        prompt = self._build_prompt(market, web_context)
+        text = self._call_model(prompt)
+        return self._parse_response(text, market.id, self._model_id())
+
+    def _chain_of_thought_analyze(self, market: Market, web_context: str = "") -> Analysis:
+        """3-step chain-of-thought: argue YES, argue NO, synthesize."""
+        ctx = self._build_cot_context(market, web_context)
+
+        # Step 1: Argue YES
+        step1 = COT_STEP1_PROMPT.format(**ctx)
+        yes_argument = self._call_model(step1)
+
+        # Step 2: Argue NO (with YES argument for rebuttal)
+        step2 = COT_STEP2_PROMPT.format(**ctx, yes_argument=yes_argument)
+        no_argument = self._call_model(step2)
+
+        # Step 3: Synthesize — returns JSON
+        step3 = COT_STEP3_PROMPT.format(
+            question=ctx["question"],
+            midpoint=ctx["midpoint"],
+            implied_pct=ctx["implied_pct"],
+            volume=ctx["volume"],
+            liquidity=ctx["liquidity"],
+            time_remaining=ctx["time_remaining"],
+            yes_argument=yes_argument,
+            no_argument=no_argument,
+        )
+        final_text = self._call_model(step3)
+        return self._parse_response(final_text, market.id, self._model_id())
+
+    def _build_cot_context(self, market: Market, web_context: str = "") -> dict:
+        midpoint = market.midpoint or 0.5
+        category = classify_market(market.question) if config.USE_MARKET_SPECIALIZATION else "general"
+        return {
+            "question": market.question,
+            "description": (market.description or "No description available.")[:500],
+            "midpoint": f"{midpoint:.3f}",
+            "implied_pct": f"{midpoint * 100:.1f}",
+            "volume": market.volume,
+            "liquidity": market.liquidity,
+            "time_remaining": _format_time_remaining(market.end_date),
+            "price_history_section": _format_price_history(market.price_history),
+            "web_context_section": web_context,
+            "category_instructions": CATEGORY_INSTRUCTIONS.get(category, ""),
+        }
 
     def _build_prompt(self, market: Market, web_context: str = "") -> str:
         midpoint = market.midpoint or 0.5
         history_section = _format_price_history(market.price_history)
+        category = classify_market(market.question) if config.USE_MARKET_SPECIALIZATION else "general"
         return ANALYSIS_PROMPT.format(
             question=market.question,
             description=(market.description or "No description available.")[:500],
@@ -134,12 +367,12 @@ class Analyzer(ABC):
             end_date=market.end_date or "Unknown",
             price_history_section=history_section,
             web_context_section=web_context,
+            category_instructions=CATEGORY_INSTRUCTIONS.get(category, ""),
         )
 
     def _parse_response(self, text: str, market_id: str, model: str) -> Analysis:
         """Parse JSON from model response, handling extra text around it."""
         cleaned = text.strip()
-        # Find JSON object in the response (handles preamble, code blocks, etc.)
         start = cleaned.find("{")
         end = cleaned.rfind("}") + 1
         if start == -1 or end <= start:
@@ -167,6 +400,10 @@ class Analyzer(ABC):
         )
 
 
+# ---------------------------------------------------------------------------
+# Concrete Analyzers
+# ---------------------------------------------------------------------------
+
 class ClaudeAnalyzer(Analyzer):
     """Analyzer using Anthropic Claude API."""
 
@@ -177,15 +414,16 @@ class ClaudeAnalyzer(Analyzer):
         import anthropic
         self.client = anthropic.Anthropic(api_key=api_key or config.ANTHROPIC_API_KEY)
 
-    def analyze(self, market: Market, web_context: str = "") -> Analysis:
-        prompt = self._build_prompt(market, web_context)
+    def _call_model(self, prompt: str) -> str:
         response = self.client.messages.create(
             model=self.MODEL,
             max_tokens=1024,
             messages=[{"role": "user", "content": prompt}],
         )
-        text = response.content[0].text
-        return self._parse_response(text, market.id, f"claude:{self.MODEL}")
+        return response.content[0].text
+
+    def _model_id(self) -> str:
+        return f"claude:{self.MODEL}"
 
 
 class GeminiAnalyzer(Analyzer):
@@ -198,14 +436,15 @@ class GeminiAnalyzer(Analyzer):
         from google import genai
         self.client = genai.Client(api_key=api_key or config.GEMINI_API_KEY)
 
-    def analyze(self, market: Market, web_context: str = "") -> Analysis:
-        prompt = self._build_prompt(market, web_context)
+    def _call_model(self, prompt: str) -> str:
         response = self.client.models.generate_content(
             model=self.MODEL,
             contents=prompt,
         )
-        text = response.text
-        return self._parse_response(text, market.id, f"gemini:{self.MODEL}")
+        return response.text
+
+    def _model_id(self) -> str:
+        return f"gemini:{self.MODEL}"
 
 
 class GrokAnalyzer(Analyzer):
@@ -221,15 +460,16 @@ class GrokAnalyzer(Analyzer):
             base_url="https://api.x.ai/v1",
         )
 
-    def analyze(self, market: Market, web_context: str = "") -> Analysis:
-        prompt = self._build_prompt(market, web_context)
+    def _call_model(self, prompt: str) -> str:
         response = self.client.chat.completions.create(
             model=self.MODEL,
             max_tokens=1024,
             messages=[{"role": "user", "content": prompt}],
         )
-        text = response.choices[0].message.content
-        return self._parse_response(text, market.id, f"grok:{self.MODEL}")
+        return response.choices[0].message.content
+
+    def _model_id(self) -> str:
+        return f"grok:{self.MODEL}"
 
 
 class EnsembleAnalyzer(Analyzer):
@@ -239,6 +479,12 @@ class EnsembleAnalyzer(Analyzer):
 
     def __init__(self, analyzers: list[Analyzer]):
         self.analyzers = analyzers
+
+    def _call_model(self, prompt: str) -> str:
+        raise NotImplementedError("Ensemble does not call models directly")
+
+    def _model_id(self) -> str:
+        return "ensemble"
 
     def analyze(self, market: Market, web_context: str = "") -> Analysis:
         results: list[Analysis] = []
@@ -297,6 +543,10 @@ class EnsembleAnalyzer(Analyzer):
             reasoning=f"Models disagree: {combined}",
         )
 
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
 
 def get_individual_analyzers() -> list[Analyzer]:
     """Return all available individual analyzers (not ensemble).

@@ -18,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 
 from src.cli import PolymarketCLI
 from src.config import config
+from src.models import TRADER_IDS
 from src import db
 
 logger = logging.getLogger("dashboard")
@@ -35,6 +36,20 @@ sim_state = {
 SIM_INTERVAL_SECONDS = 300  # 5 minutes
 
 
+def _init_trader_state(tid: str, paused_set: set[str]):
+    """Initialize or reset per-cycle trader state."""
+    sim_state["traders"].setdefault(tid, {
+        "bets_placed": 0, "errors": 0,
+        "status": "idle", "last_action": None,
+        "last_action_desc": "", "markets_analyzed": 0,
+        "bets_this_cycle": 0,
+    })
+    if tid in paused_set:
+        sim_state["traders"][tid]["status"] = "paused"
+    sim_state["traders"][tid]["bets_this_cycle"] = 0
+    sim_state["traders"][tid]["markets_analyzed"] = 0
+
+
 def _run_cycle():
     """Run one simulation cycle (blocking). Called from a thread so the web server stays responsive."""
     from src.analyzer import get_individual_analyzers, EnsembleAnalyzer, _build_web_context
@@ -43,8 +58,13 @@ def _run_cycle():
 
     cli = PolymarketCLI()
     scanner = MarketScanner(cli)
+    paused = set(config.PAUSED_TRADERS) if hasattr(config, "PAUSED_TRADERS") else set()
 
     logger.info("=== Cycle %d starting ===", sim_state["cycle_count"] + 1)
+
+    # Initialize all trader states for this cycle
+    for tid in TRADER_IDS:
+        _init_trader_state(tid, paused)
 
     # 1. Scan markets (shared across all traders)
     markets = scanner.scan(max_markets=30)
@@ -66,16 +86,17 @@ def _run_cycle():
             logger.info("Web context fetched for: %s", market.question[:50])
 
     # 4. Run each model independently
-    all_analyses = {}  # model_trader_id -> list of (market, analysis)
+    all_analyses = {}
     for analyzer in analyzers:
         tid = analyzer.TRADER_ID
-        sim_state["traders"].setdefault(tid, {"bets_placed": 0, "errors": 0})
+        sim_state["traders"][tid]["status"] = "analyzing"
         all_analyses[tid] = []
 
         for market in markets:
             try:
                 analysis = analyzer.analyze(market, web_contexts.get(market.id, ""))
                 all_analyses[tid].append((market, analysis))
+                sim_state["traders"][tid]["markets_analyzed"] += 1
                 db.save_analysis(
                     tid, market.id, analysis.model,
                     analysis.recommendation.value,
@@ -86,16 +107,19 @@ def _run_cycle():
                 sim_state["traders"][tid]["errors"] += 1
                 logger.warning("[%s] Error on %s: %s", tid, market.question[:40], e)
 
+        sim_state["traders"][tid]["status"] = "idle"
+        sim_state["traders"][tid]["last_action"] = datetime.now(timezone.utc).isoformat()
+
     # 5. Run ensemble (only if not paused and 2+ models active)
-    paused = set(config.PAUSED_TRADERS) if hasattr(config, "PAUSED_TRADERS") else set()
     if len(analyzers) >= 2 and "ensemble" not in paused:
         ensemble = EnsembleAnalyzer(analyzers)
         all_analyses["ensemble"] = []
-        sim_state["traders"].setdefault("ensemble", {"bets_placed": 0, "errors": 0})
+        sim_state["traders"]["ensemble"]["status"] = "analyzing"
         for market in markets:
             try:
                 analysis = ensemble.analyze(market, web_contexts.get(market.id, ""))
                 all_analyses["ensemble"].append((market, analysis))
+                sim_state["traders"]["ensemble"]["markets_analyzed"] += 1
                 db.save_analysis(
                     "ensemble", market.id, analysis.model,
                     analysis.recommendation.value,
@@ -103,22 +127,56 @@ def _run_cycle():
                     analysis.reasoning,
                 )
             except Exception as e:
+                sim_state["traders"]["ensemble"]["errors"] += 1
                 logger.warning("[ensemble] Error on %s: %s", market.question[:40], e)
+        sim_state["traders"]["ensemble"]["status"] = "idle"
+        sim_state["traders"]["ensemble"]["last_action"] = datetime.now(timezone.utc).isoformat()
 
     # 6. Place bets for each trader
     for tid, market_analyses in all_analyses.items():
+        sim_state["traders"][tid]["status"] = "betting"
         sim = Simulator(cli, tid)
+        cycle_bets = 0
         for market, analysis in market_analyses:
             bet = sim.place_bet(market, analysis)
             if bet:
                 sim_state["traders"][tid]["bets_placed"] += 1
+                cycle_bets += 1
                 logger.info("[%s] BET #%d: %s on '%s' — $%.2f (Kelly)",
                             tid, bet.id, bet.side.value,
                             bet.market_question[:45], bet.amount)
 
-        # Update positions & check resolutions
+        sim_state["traders"][tid]["status"] = "updating"
         sim.update_positions()
         sim.check_resolutions()
+
+        sim_state["traders"][tid]["bets_this_cycle"] = cycle_bets
+        sim_state["traders"][tid]["status"] = "idle"
+        now_iso = datetime.now(timezone.utc).isoformat()
+        sim_state["traders"][tid]["last_action"] = now_iso
+        sim_state["traders"][tid]["last_action_desc"] = (
+            f"Analyzed {sim_state['traders'][tid]['markets_analyzed']} markets, "
+            f"placed {cycle_bets} bets"
+        )
+
+    # 7. Save portfolio snapshots for charts
+    cycle_num = sim_state["cycle_count"] + 1
+    for tid in TRADER_IDS:
+        try:
+            p = db.get_portfolio(tid)
+            db.save_portfolio_snapshot(
+                trader_id=tid,
+                portfolio_value=p.portfolio_value,
+                balance=p.balance,
+                unrealized_pnl=p.unrealized_pnl,
+                total_bets=p.total_bets,
+                wins=p.wins,
+                losses=p.losses,
+                realized_pnl=p.realized_pnl,
+                cycle_number=cycle_num,
+            )
+        except Exception as e:
+            logger.warning("Failed to snapshot %s: %s", tid, e)
 
     sim_state["cycle_count"] += 1
     sim_state["last_run"] = datetime.now(timezone.utc).isoformat()
@@ -136,6 +194,9 @@ async def simulation_loop():
             await asyncio.to_thread(_run_cycle)
         except Exception as e:
             sim_state["last_error"] = str(e)
+            for tid_state in sim_state["traders"].values():
+                if tid_state.get("status") not in ("paused", "idle"):
+                    tid_state["status"] = "error"
             logger.error("Simulation error: %s\n%s", e, traceback.format_exc())
 
         sim_state["status"] = "waiting"
@@ -167,6 +228,21 @@ async def dashboard(request: Request):
     total_value = sum(p.portfolio_value for p in portfolios)
     total_pnl = sum(p.total_pnl for p in portfolios)
 
+    # Build per-trader detail for status indicators
+    paused_set = set(config.PAUSED_TRADERS)
+    trader_details = {}
+    for tid in TRADER_IDS:
+        trader_state = sim_state["traders"].get(tid, {})
+        trader_details[tid] = {
+            "status": "paused" if tid in paused_set else trader_state.get("status", "idle"),
+            "last_action": trader_state.get("last_action"),
+            "last_action_desc": trader_state.get("last_action_desc", ""),
+            "bets_placed": trader_state.get("bets_placed", 0),
+            "errors": trader_state.get("errors", 0),
+            "markets_analyzed": trader_state.get("markets_analyzed", 0),
+            "bets_this_cycle": trader_state.get("bets_this_cycle", 0),
+        }
+
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "portfolios": portfolios,
@@ -176,6 +252,7 @@ async def dashboard(request: Request):
         "sim": sim_state,
         "total_value": total_value,
         "total_pnl": total_pnl,
+        "trader_details": trader_details,
         "config": {
             "starting_balance": config.SIM_STARTING_BALANCE,
             "max_bet_pct": config.SIM_MAX_BET_PCT,
@@ -222,6 +299,22 @@ async def api_status():
             for p in portfolios
         ],
     })
+
+
+@app.get("/api/portfolio-history")
+async def api_portfolio_history(hours: int = 72):
+    """Return portfolio snapshots for all traders, used by Chart.js."""
+    rows = db.get_portfolio_history(hours=min(hours, 168))
+    series = {}
+    for row in rows:
+        tid = row["trader_id"]
+        series.setdefault(tid, [])
+        ts = row["created_at"]
+        series[tid].append({
+            "t": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+            "v": round(row["portfolio_value"], 2),
+        })
+    return JSONResponse(series)
 
 
 @app.get("/api/backtest/{run_id}")

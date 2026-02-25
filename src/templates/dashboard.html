@@ -80,10 +80,37 @@
         .rank-3 .rank-badge { background: #b4530922; color: #b45309; }
         .rank-4 .rank-badge { background: #44444422; color: #666; }
         .trader-name {
-            font-size: 18px; font-weight: 700; color: #fff; margin-bottom: 12px;
+            font-size: 18px; font-weight: 700; color: #fff; margin-bottom: 4px;
             text-transform: uppercase; letter-spacing: 1px;
         }
         .trader-name .model-sub { font-size: 10px; color: #666; font-weight: 400; letter-spacing: 0; text-transform: none; }
+
+        /* Agent status indicators */
+        .agent-status {
+            display: flex; align-items: center; gap: 6px;
+            margin: 8px 0 4px 0; font-size: 11px;
+        }
+        .status-dot {
+            width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+        }
+        .status-dot.analyzing { background: #facc15; animation: pulse 1.5s infinite; }
+        .status-dot.betting { background: #60a5fa; animation: pulse 1s infinite; }
+        .status-dot.updating { background: #c084fc; animation: pulse 1.5s infinite; }
+        .status-dot.idle { background: #4ade80; }
+        .status-dot.paused { background: #666; }
+        .status-dot.error { background: #f87171; animation: pulse 1s infinite; }
+        .status-label { text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+        .status-label.analyzing { color: #facc15; }
+        .status-label.betting { color: #60a5fa; }
+        .status-label.updating { color: #c084fc; }
+        .status-label.idle { color: #4ade80; }
+        .status-label.paused { color: #666; }
+        .status-label.error { color: #f87171; }
+        .agent-activity {
+            font-size: 10px; color: #555; margin-bottom: 12px;
+            line-height: 1.4;
+        }
+
         .trader-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
         .trader-stat .label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 1px; }
         .trader-stat .value { font-size: 20px; font-weight: 700; color: #fff; }
@@ -92,6 +119,28 @@
             margin-top: 12px; height: 4px; background: #1a1a2e; border-radius: 2px; overflow: hidden;
         }
         .roi-bar-fill { height: 100%; border-radius: 2px; transition: width 0.5s; }
+
+        /* Chart section */
+        .chart-section {
+            background: linear-gradient(135deg, #12121f 0%, #1a1a30 100%);
+            border: 1px solid #2a2a4a;
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+        .chart-section h2 {
+            font-size: 16px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 2px; color: #7c5cfc; margin-bottom: 20px;
+        }
+        .chart-container {
+            position: relative;
+            height: 300px;
+            width: 100%;
+        }
+        .chart-empty {
+            text-align: center; color: #555; padding: 60px 20px;
+            font-size: 13px;
+        }
 
         /* Sections */
         .section {
@@ -143,6 +192,7 @@
         .empty-state { padding: 40px 20px; text-align: center; color: #555; font-size: 13px; }
         .info-bar {
             display: flex; gap: 24px; margin-bottom: 24px; font-size: 12px; color: #666;
+            flex-wrap: wrap;
         }
         .info-bar span { display: flex; align-items: center; gap: 6px; }
         @media (max-width: 900px) {
@@ -168,6 +218,7 @@
             <span>Markets scanned: {{ sim.markets_scanned }}</span>
             <span>Sizing: Quarter-Kelly</span>
             <span>Max bet: {{ "%.0f"|format(config.max_bet_pct * 100) }}%</span>
+            {% if sim.last_run %}<span>Last run: {{ sim.last_run[:19] }}Z</span>{% endif %}
             {% if sim.last_error %}<span style="color: #f87171;">Error: {{ sim.last_error[:60] }}</span>{% endif %}
         </div>
 
@@ -176,6 +227,7 @@
             <h2>Model Leaderboard</h2>
             <div class="leaderboard-grid">
                 {% for p in portfolios %}
+                {% set ts = trader_details.get(p.trader_id, {}) %}
                 <div class="trader-card rank-{{ loop.index }}">
                     <div class="rank-badge">#{{ loop.index }}</div>
                     <div class="trader-name">
@@ -187,6 +239,25 @@
                             {% elif p.trader_id == 'ensemble' %}All Models Combined
                             {% endif %}
                         </div>
+                    </div>
+                    <div class="agent-status">
+                        <span class="status-dot {{ ts.get('status', 'idle') }}"></span>
+                        <span class="status-label {{ ts.get('status', 'idle') }}">{{ ts.get('status', 'idle') }}</span>
+                        {% if ts.get('errors', 0) > 0 %}
+                        <span style="color: #f87171; font-size: 10px; margin-left: 8px;">{{ ts.errors }} errors</span>
+                        {% endif %}
+                    </div>
+                    <div class="agent-activity">
+                        {% if ts.get('last_action_desc') %}
+                            {{ ts.last_action_desc }}
+                        {% elif ts.get('status') == 'paused' %}
+                            Paused to save API costs
+                        {% else %}
+                            Waiting for first cycle...
+                        {% endif %}
+                        {% if ts.get('last_action') %}
+                        <br>Last active: {{ ts.last_action[:19] }}Z
+                        {% endif %}
                     </div>
                     <div class="trader-stats">
                         <div class="trader-stat">
@@ -218,6 +289,14 @@
                     </div>
                 </div>
                 {% endfor %}
+            </div>
+        </div>
+
+        <!-- PERFORMANCE CHART -->
+        <div class="chart-section">
+            <h2>Portfolio Performance</h2>
+            <div class="chart-container">
+                <canvas id="portfolioChart"></canvas>
             </div>
         </div>
 
@@ -318,6 +397,92 @@
         </div>
     </div>
 
-    <script>setTimeout(() => location.reload(), 15000);</script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <script>
+        const TRADER_COLORS = {
+            claude: '#7c5cfc',
+            grok: '#f4364c',
+            gemini: '#4285f4',
+            ensemble: '#fbbf24'
+        };
+
+        async function loadChart() {
+            try {
+                const resp = await fetch('/api/portfolio-history?hours=72');
+                const data = await resp.json();
+
+                const datasets = [];
+                for (const [tid, points] of Object.entries(data)) {
+                    if (points.length === 0) continue;
+                    datasets.push({
+                        label: tid.charAt(0).toUpperCase() + tid.slice(1),
+                        data: points.map(p => ({ x: new Date(p.t), y: p.v })),
+                        borderColor: TRADER_COLORS[tid] || '#888',
+                        backgroundColor: (TRADER_COLORS[tid] || '#888') + '22',
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        pointHitRadius: 8,
+                        tension: 0.3,
+                        fill: false,
+                    });
+                }
+
+                if (datasets.length === 0) {
+                    document.querySelector('.chart-container').innerHTML =
+                        '<div class="chart-empty">No history yet. Charts appear after the first cycle completes.</div>';
+                    return;
+                }
+
+                const ctx = document.getElementById('portfolioChart').getContext('2d');
+                new Chart(ctx, {
+                    type: 'line',
+                    data: { datasets },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { mode: 'index', intersect: false },
+                        plugins: {
+                            legend: {
+                                labels: { color: '#aaa', font: { family: "'SF Mono', monospace", size: 11 } }
+                            },
+                            tooltip: {
+                                backgroundColor: '#1a1a2e',
+                                titleColor: '#fff',
+                                bodyColor: '#ccc',
+                                borderColor: '#2a2a4a',
+                                borderWidth: 1,
+                                callbacks: {
+                                    label: function(context) {
+                                        return context.dataset.label + ': $' + context.parsed.y.toFixed(2);
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                type: 'time',
+                                time: { unit: 'hour', displayFormats: { hour: 'MMM d HH:mm' } },
+                                ticks: { color: '#555', maxTicksLimit: 12 },
+                                grid: { color: '#1a1a2e' }
+                            },
+                            y: {
+                                ticks: {
+                                    color: '#555',
+                                    callback: function(val) { return '$' + val.toFixed(0); }
+                                },
+                                grid: { color: '#1a1a2e' }
+                            }
+                        }
+                    }
+                });
+            } catch (e) {
+                console.error('Chart load failed:', e);
+            }
+        }
+
+        loadChart();
+        setTimeout(() => location.reload(), 15000);
+    </script>
 </body>
 </html>
