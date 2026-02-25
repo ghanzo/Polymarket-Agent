@@ -1,0 +1,202 @@
+import json
+
+import pytest
+from freezegun import freeze_time
+
+from src.analyzer import (
+    Analyzer,
+    _format_price_history,
+    _format_time_remaining,
+    classify_market,
+)
+from src.models import Analysis, Market, Recommendation
+
+
+# ── Concrete stub so we can test _parse_response (defined on the ABC) ──
+
+class _StubAnalyzer(Analyzer):
+    """Minimal concrete analyzer for testing base-class methods."""
+
+    def _call_model(self, prompt: str) -> str:
+        return ""
+
+    def _model_id(self) -> str:
+        return "stub:test"
+
+
+@pytest.fixture
+def analyzer():
+    return _StubAnalyzer()
+
+
+# ── _parse_response ─────────────────────────────────────────────────
+
+class TestParseResponse:
+    def test_valid_json(self, analyzer):
+        text = json.dumps({
+            "recommendation": "BUY_YES",
+            "confidence": 0.8,
+            "estimated_probability": 0.72,
+            "reasoning": "Strong momentum",
+        })
+        result = analyzer._parse_response(text, "m1", "test:v1")
+        assert result.recommendation == Recommendation.BUY_YES
+        assert result.confidence == pytest.approx(0.8)
+        assert result.estimated_probability == pytest.approx(0.72)
+        assert result.reasoning == "Strong momentum"
+        assert result.market_id == "m1"
+        assert result.model == "test:v1"
+
+    def test_json_with_surrounding_text(self, analyzer):
+        text = 'Here is my analysis:\n{"recommendation": "BUY_NO", "confidence": 0.6, "estimated_probability": 0.3, "reasoning": "weak"}\nThat is all.'
+        result = analyzer._parse_response(text, "m1", "test:v1")
+        assert result.recommendation == Recommendation.BUY_NO
+        assert result.confidence == pytest.approx(0.6)
+
+    def test_missing_recommendation_defaults_skip(self, analyzer):
+        text = '{"confidence": 0.5, "estimated_probability": 0.5, "reasoning": "unsure"}'
+        result = analyzer._parse_response(text, "m1", "test:v1")
+        assert result.recommendation == Recommendation.SKIP
+
+    def test_invalid_recommendation_defaults_skip(self, analyzer):
+        text = '{"recommendation": "HOLD", "confidence": 0.5, "estimated_probability": 0.5, "reasoning": "test"}'
+        result = analyzer._parse_response(text, "m1", "test:v1")
+        assert result.recommendation == Recommendation.SKIP
+
+    def test_lowercase_recommendation_uppercased(self, analyzer):
+        text = '{"recommendation": "buy_yes", "confidence": 0.7, "estimated_probability": 0.6, "reasoning": "ok"}'
+        result = analyzer._parse_response(text, "m1", "test:v1")
+        assert result.recommendation == Recommendation.BUY_YES
+
+    def test_confidence_clamped_high(self, analyzer):
+        text = '{"recommendation": "SKIP", "confidence": 1.5, "estimated_probability": 0.5, "reasoning": "test"}'
+        result = analyzer._parse_response(text, "m1", "test:v1")
+        assert result.confidence == 1.0
+
+    def test_confidence_clamped_low(self, analyzer):
+        text = '{"recommendation": "SKIP", "confidence": -0.3, "estimated_probability": 0.5, "reasoning": "test"}'
+        result = analyzer._parse_response(text, "m1", "test:v1")
+        assert result.confidence == 0.0
+
+    def test_estimated_probability_clamped(self, analyzer):
+        text = '{"recommendation": "SKIP", "confidence": 0.5, "estimated_probability": 1.8, "reasoning": "test"}'
+        result = analyzer._parse_response(text, "m1", "test:v1")
+        assert result.estimated_probability == 1.0
+
+    def test_missing_reasoning_default(self, analyzer):
+        text = '{"recommendation": "SKIP", "confidence": 0.5, "estimated_probability": 0.5}'
+        result = analyzer._parse_response(text, "m1", "test:v1")
+        assert result.reasoning == "No reasoning provided"
+
+    def test_no_json_raises(self, analyzer):
+        with pytest.raises(ValueError, match="No JSON found"):
+            analyzer._parse_response("no json here", "m1", "test:v1")
+
+    def test_whitespace_only_raises(self, analyzer):
+        with pytest.raises(ValueError, match="No JSON found"):
+            analyzer._parse_response("   ", "m1", "test:v1")
+
+    def test_empty_json_object(self, analyzer):
+        result = analyzer._parse_response("{}", "m1", "test:v1")
+        assert result.recommendation == Recommendation.SKIP
+        assert result.confidence == 0.0
+        assert result.estimated_probability == 0.5
+
+
+# ── classify_market ─────────────────────────────────────────────────
+
+class TestClassifyMarket:
+    def test_crypto(self):
+        assert classify_market("Will Bitcoin hit $100k?") == "crypto"
+
+    def test_politics(self):
+        assert classify_market("Will Trump win the election?") == "politics"
+
+    def test_sports(self):
+        assert classify_market("Will the Lakers win the NBA championship?") == "sports"
+
+    def test_finance(self):
+        assert classify_market("Will the Fed raise interest rates?") == "finance"
+
+    def test_science_tech(self):
+        assert classify_market("Will the FDA approve the new drug?") == "science_tech"
+
+    def test_general_no_match(self):
+        assert classify_market("Will it rain tomorrow?") == "general"
+
+    def test_case_insensitive(self):
+        assert classify_market("BITCOIN PRICE PREDICTION") == "crypto"
+
+    def test_empty_string(self):
+        assert classify_market("") == "general"
+
+    def test_crypto_before_politics(self):
+        # "crypto" is checked before "politics" in the loop
+        assert classify_market("Will Trump ban crypto?") == "crypto"
+
+
+# ── _format_time_remaining ──────────────────────────────────────────
+
+class TestFormatTimeRemaining:
+    def test_none(self):
+        assert _format_time_remaining(None) == "Unknown"
+
+    def test_empty_string(self):
+        assert _format_time_remaining("") == "Unknown"
+
+    def test_invalid_format(self):
+        assert _format_time_remaining("not-a-date") == "Unknown"
+
+    @freeze_time("2026-01-01T00:00:00+00:00")
+    def test_more_than_30_days(self):
+        result = _format_time_remaining("2026-04-01T00:00:00Z")
+        assert "90 days" in result
+        assert "months" in result
+
+    @freeze_time("2026-01-01T00:00:00+00:00")
+    def test_between_1_and_30_days(self):
+        result = _format_time_remaining("2026-01-15T12:00:00Z")
+        assert "14 days" in result
+        assert "hours" in result
+
+    @freeze_time("2026-01-01T00:00:00+00:00")
+    def test_less_than_1_day_hours(self):
+        result = _format_time_remaining("2026-01-01T05:00:00Z")
+        assert "5 hours" in result
+
+    @freeze_time("2026-01-01T00:00:00+00:00")
+    def test_less_than_1_hour(self):
+        result = _format_time_remaining("2026-01-01T00:30:00Z")
+        assert result == "< 1 hour"
+
+
+# ── _format_price_history ───────────────────────────────────────────
+
+class TestFormatPriceHistory:
+    def test_none(self):
+        assert _format_price_history(None) == ""
+
+    def test_empty_list(self):
+        assert _format_price_history([]) == ""
+
+    def test_single_point(self):
+        result = _format_price_history([{"t": "2026-01-01", "p": "0.65"}])
+        assert "2026-01-01" in result
+        assert "0.65" in result
+
+    def test_truncates_to_last_7(self):
+        history = [{"t": f"day-{i}", "p": f"0.{i}"} for i in range(10)]
+        result = _format_price_history(history)
+        assert "day-3" in result  # 4th item (index 3) is first of last 7
+        assert "day-2" not in result  # 3rd item excluded
+
+    def test_fewer_than_7(self):
+        history = [{"t": "d1", "p": "0.5"}, {"t": "d2", "p": "0.6"}]
+        result = _format_price_history(history)
+        assert "d1" in result
+        assert "d2" in result
+
+    def test_missing_keys_default_empty(self):
+        result = _format_price_history([{"t": "2026-01-01"}])
+        assert "2026-01-01" in result
+        assert ": " in result  # "p" defaults to ""
