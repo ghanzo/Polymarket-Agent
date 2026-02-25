@@ -147,26 +147,30 @@ def kelly_size(
     bankroll: float,
     max_bet_pct: float = 0.20,
     fraction: float = 0.25,
+    spread: float = 0.0,
 ) -> float:
     """Quarter-Kelly bet sizing. Returns dollar amount to bet.
 
     For a YES bet at price p with estimated probability e:
-        edge = e - p
+        edge = e - p - spread_cost
         kelly_f = edge / (1 - p)
 
     For a NO bet: flip perspective
-        edge = (1 - e) - (1 - p) = p - e
+        edge = (1 - e) - (1 - p) - spread_cost = p - e - spread_cost
         kelly_f = edge / p
 
+    spread: bid-ask spread; half is subtracted from edge as execution cost
     fraction: 0.25 = quarter-Kelly (conservative default)
     """
+    spread_cost = abs(spread) / 2.0
+
     if side == Side.YES:
-        edge = estimated_prob - market_price
+        edge = estimated_prob - market_price - spread_cost
         if edge <= 0 or market_price >= 1.0:
             return 0.0
         kelly_f = edge / (1.0 - market_price)
     else:
-        edge = (1.0 - estimated_prob) - (1.0 - market_price)
+        edge = (1.0 - estimated_prob) - (1.0 - market_price) - spread_cost
         if edge <= 0 or market_price <= 0.0:
             return 0.0
         kelly_f = edge / market_price

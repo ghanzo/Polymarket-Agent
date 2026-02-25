@@ -3,6 +3,7 @@ import json
 import logging
 import time
 from abc import ABC, abstractmethod
+from collections import Counter
 from datetime import datetime, timezone
 
 import httpx
@@ -29,6 +30,7 @@ ANALYSIS_PROMPT = """You are an expert prediction market trader. Your job is to 
 - **Time remaining**: {time_remaining}
 - **End date**: {end_date}
 {price_history_section}
+{momentum_section}
 {web_context_section}
 {category_instructions}
 
@@ -57,6 +59,7 @@ COT_STEP1_PROMPT = """You are an expert prediction market analyst.
 - **Volume**: ${volume} | **Liquidity**: ${liquidity}
 - **Time remaining**: {time_remaining}
 {price_history_section}
+{momentum_section}
 {web_context_section}
 {category_instructions}
 
@@ -280,6 +283,23 @@ def _format_price_history(history: list[dict] | None) -> str:
     return "\n".join(lines)
 
 
+def _format_momentum(price_history: list[dict] | None) -> str:
+    """Compute price momentum from history and return a one-line summary."""
+    if not price_history or len(price_history) < 2:
+        return ""
+    prices = [float(p.get("p", 0)) for p in price_history if p.get("p")]
+    if len(prices) < 2 or prices[0] == 0:
+        return ""
+    momentum = (prices[-1] - prices[0]) / prices[0]
+    if momentum > 0.02:
+        direction = "trending UP"
+    elif momentum < -0.02:
+        direction = "trending DOWN"
+    else:
+        direction = "stable"
+    return f"- **Price momentum**: {momentum:+.1%} over recent history ({direction})"
+
+
 # ---------------------------------------------------------------------------
 # Base Analyzer
 # ---------------------------------------------------------------------------
@@ -369,6 +389,7 @@ class Analyzer(ABC):
             "liquidity": market.liquidity,
             "time_remaining": _format_time_remaining(market.end_date),
             "price_history_section": _format_price_history(market.price_history),
+            "momentum_section": _format_momentum(market.price_history),
             "web_context_section": web_context,
             "category_instructions": CATEGORY_INSTRUCTIONS.get(category, ""),
         }
@@ -389,6 +410,7 @@ class Analyzer(ABC):
             time_remaining=_format_time_remaining(market.end_date),
             end_date=market.end_date or "Unknown",
             price_history_section=history_section,
+            momentum_section=_format_momentum(market.price_history),
             web_context_section=web_context,
             category_instructions=CATEGORY_INSTRUCTIONS.get(category, ""),
         )
@@ -539,22 +561,32 @@ class EnsembleAnalyzer(Analyzer):
                 ),
             )
 
-        # Check agreement
-        directions = set(r.recommendation for r in non_skip)
-        if len(directions) == 1:
-            avg_confidence = sum(r.confidence for r in non_skip) / len(non_skip)
-            avg_prob = sum(r.estimated_probability for r in results) / len(results)
+        # Majority vote: bet if >50% of non-skip models agree on direction
+        votes = Counter(r.recommendation for r in non_skip)
+        majority_rec, majority_count = votes.most_common(1)[0]
+
+        if majority_count > len(non_skip) / 2:
+            # Majority agrees — use confidence-weighted probability from voters
+            voters = [r for r in non_skip if r.recommendation == majority_rec]
+            total_conf = sum(r.confidence for r in voters)
+            if total_conf > 0:
+                weighted_prob = sum(
+                    r.estimated_probability * r.confidence for r in voters
+                ) / total_conf
+            else:
+                weighted_prob = sum(r.estimated_probability for r in voters) / len(voters)
+            avg_confidence = sum(r.confidence for r in voters) / len(voters)
             combined = " | ".join(
                 f"{r.model} ({r.confidence:.0%}): {r.reasoning}" for r in results
             )
             return Analysis(
                 market_id=market.id, model="ensemble",
-                recommendation=non_skip[0].recommendation,
-                confidence=avg_confidence, estimated_probability=avg_prob,
+                recommendation=majority_rec,
+                confidence=avg_confidence, estimated_probability=weighted_prob,
                 reasoning=combined,
             )
 
-        # Disagreement
+        # No majority — skip
         avg_prob = sum(r.estimated_probability for r in results) / len(results)
         combined = " | ".join(
             f"{r.model}: {r.recommendation.value} ({r.confidence:.0%})" for r in results

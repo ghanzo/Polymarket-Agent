@@ -46,7 +46,12 @@ class Simulator:
                 self.trader_id, est_prob, min_samples=config.MIN_CALIBRATION_SAMPLES
             )
 
-        # Kelly criterion bet sizing
+        # Reject if edge too small
+        edge = abs(est_prob - midpoint)
+        if edge < config.SIM_MIN_EDGE:
+            return None
+
+        # Kelly criterion bet sizing (spread-adjusted)
         bet_amount = kelly_size(
             estimated_prob=est_prob,
             market_price=midpoint,
@@ -54,6 +59,7 @@ class Simulator:
             bankroll=portfolio.balance,
             max_bet_pct=config.SIM_MAX_BET_PCT,
             fraction=0.25,  # quarter-Kelly
+            spread=market.spread or 0.0,
         )
 
         # Minimum $1 bet, cap at balance

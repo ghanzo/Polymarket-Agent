@@ -62,6 +62,30 @@ class TestKellySize:
         result = kelly_size(0.73, 0.50, Side.YES, bankroll=1000)
         assert result == round(result, 2)
 
+    # ── Spread-adjusted Kelly ───────────────────────────────────────
+
+    def test_spread_reduces_bet(self):
+        no_spread = kelly_size(0.7, 0.5, Side.YES, bankroll=1000, spread=0.0)
+        with_spread = kelly_size(0.7, 0.5, Side.YES, bankroll=1000, spread=0.10)
+        assert with_spread < no_spread
+        assert with_spread > 0  # still has edge after 5% spread cost
+
+    def test_spread_eliminates_edge(self):
+        # edge=0.2, spread_cost=0.10 → net edge=0.10 still positive
+        assert kelly_size(0.7, 0.5, Side.YES, bankroll=1000, spread=0.20) > 0
+        # edge=0.2, spread_cost=0.20 → net edge=0.0 → no bet
+        assert kelly_size(0.7, 0.5, Side.YES, bankroll=1000, spread=0.40) == 0.0
+
+    def test_spread_no_side(self):
+        no_spread = kelly_size(0.3, 0.5, Side.NO, bankroll=1000, spread=0.0)
+        with_spread = kelly_size(0.3, 0.5, Side.NO, bankroll=1000, spread=0.10)
+        assert with_spread < no_spread
+
+    def test_spread_zero_same_as_default(self):
+        a = kelly_size(0.7, 0.5, Side.YES, bankroll=1000)
+        b = kelly_size(0.7, 0.5, Side.YES, bankroll=1000, spread=0.0)
+        assert a == b
+
 
 # ── Market.from_cli ─────────────────────────────────────────────────
 

@@ -5,6 +5,8 @@ from freezegun import freeze_time
 
 from src.analyzer import (
     Analyzer,
+    EnsembleAnalyzer,
+    _format_momentum,
     _format_price_history,
     _format_time_remaining,
     classify_market,
@@ -200,3 +202,127 @@ class TestFormatPriceHistory:
         result = _format_price_history([{"t": "2026-01-01"}])
         assert "2026-01-01" in result
         assert ": " in result  # "p" defaults to ""
+
+
+# ── _format_momentum ────────────────────────────────────────────────
+
+class TestFormatMomentum:
+    def test_none(self):
+        assert _format_momentum(None) == ""
+
+    def test_empty_list(self):
+        assert _format_momentum([]) == ""
+
+    def test_single_point(self):
+        assert _format_momentum([{"p": "0.5"}]) == ""
+
+    def test_trending_up(self):
+        history = [{"p": "0.50"}, {"p": "0.55"}, {"p": "0.60"}]
+        result = _format_momentum(history)
+        assert "trending UP" in result
+        assert "+20.0%" in result
+
+    def test_trending_down(self):
+        history = [{"p": "0.60"}, {"p": "0.55"}, {"p": "0.50"}]
+        result = _format_momentum(history)
+        assert "trending DOWN" in result
+
+    def test_stable(self):
+        history = [{"p": "0.50"}, {"p": "0.505"}, {"p": "0.501"}]
+        result = _format_momentum(history)
+        assert "stable" in result
+
+    def test_zero_start_price(self):
+        history = [{"p": "0"}, {"p": "0.5"}]
+        assert _format_momentum(history) == ""
+
+    def test_missing_p_key(self):
+        history = [{"t": "d1"}, {"t": "d2"}]
+        assert _format_momentum(history) == ""
+
+
+# ── EnsembleAnalyzer (majority vote) ────────────────────────────────
+
+def _make_analysis(market_id: str, model: str, rec: Recommendation,
+                   confidence: float, est_prob: float) -> Analysis:
+    return Analysis(
+        market_id=market_id, model=model, recommendation=rec,
+        confidence=confidence, estimated_probability=est_prob,
+        reasoning=f"{model} reasoning",
+    )
+
+
+class _FakeAnalyzer(Analyzer):
+    """Analyzer that returns a pre-set Analysis."""
+
+    def __init__(self, result: Analysis):
+        self._result = result
+        self.TRADER_ID = f"fake_{result.model}"
+
+    def _call_model(self, prompt: str) -> str:
+        return ""
+
+    def _model_id(self) -> str:
+        return self._result.model
+
+    def analyze(self, market, web_context=""):
+        return self._result
+
+
+class TestEnsembleMajority:
+    MARKET = Market(
+        id="m1", question="Test?", description="", outcomes=["Yes", "No"],
+        token_ids=["t1", "t2"], end_date=None, active=True,
+        midpoint=0.5,
+    )
+
+    def test_unanimous_yes(self):
+        analyzers = [
+            _FakeAnalyzer(_make_analysis("m1", "a", Recommendation.BUY_YES, 0.8, 0.7)),
+            _FakeAnalyzer(_make_analysis("m1", "b", Recommendation.BUY_YES, 0.7, 0.65)),
+        ]
+        ensemble = EnsembleAnalyzer(analyzers)
+        result = ensemble.analyze(self.MARKET)
+        assert result.recommendation == Recommendation.BUY_YES
+
+    def test_majority_2_of_3(self):
+        analyzers = [
+            _FakeAnalyzer(_make_analysis("m1", "a", Recommendation.BUY_YES, 0.8, 0.7)),
+            _FakeAnalyzer(_make_analysis("m1", "b", Recommendation.BUY_YES, 0.7, 0.65)),
+            _FakeAnalyzer(_make_analysis("m1", "c", Recommendation.SKIP, 0.3, 0.5)),
+        ]
+        ensemble = EnsembleAnalyzer(analyzers)
+        result = ensemble.analyze(self.MARKET)
+        # 2 of 2 non-skip agree → should bet
+        assert result.recommendation == Recommendation.BUY_YES
+
+    def test_disagreement_skips(self):
+        analyzers = [
+            _FakeAnalyzer(_make_analysis("m1", "a", Recommendation.BUY_YES, 0.8, 0.7)),
+            _FakeAnalyzer(_make_analysis("m1", "b", Recommendation.BUY_NO, 0.8, 0.3)),
+        ]
+        ensemble = EnsembleAnalyzer(analyzers)
+        result = ensemble.analyze(self.MARKET)
+        # 1 YES, 1 NO — no majority → skip
+        assert result.recommendation == Recommendation.SKIP
+
+    def test_all_skip(self):
+        analyzers = [
+            _FakeAnalyzer(_make_analysis("m1", "a", Recommendation.SKIP, 0.3, 0.5)),
+            _FakeAnalyzer(_make_analysis("m1", "b", Recommendation.SKIP, 0.2, 0.5)),
+        ]
+        ensemble = EnsembleAnalyzer(analyzers)
+        result = ensemble.analyze(self.MARKET)
+        assert result.recommendation == Recommendation.SKIP
+
+    def test_confidence_weighted_probability(self):
+        # Model a: 80% confidence, est_prob=0.80
+        # Model b: 40% confidence, est_prob=0.60
+        # Weighted: (0.80*0.80 + 0.60*0.40) / (0.80+0.40) = 0.88/1.20 = 0.7333
+        analyzers = [
+            _FakeAnalyzer(_make_analysis("m1", "a", Recommendation.BUY_YES, 0.8, 0.80)),
+            _FakeAnalyzer(_make_analysis("m1", "b", Recommendation.BUY_YES, 0.4, 0.60)),
+        ]
+        ensemble = EnsembleAnalyzer(analyzers)
+        result = ensemble.analyze(self.MARKET)
+        assert result.estimated_probability == pytest.approx(0.7333, abs=0.01)

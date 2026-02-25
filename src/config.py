@@ -38,7 +38,8 @@ class Config:
     # Simulation settings
     SIM_STARTING_BALANCE: float = float(os.getenv("SIM_STARTING_BALANCE", "1000"))
     SIM_MAX_BET_PCT: float = float(os.getenv("SIM_MAX_BET_PCT", "0.05"))
-    SIM_MIN_CONFIDENCE: float = float(os.getenv("SIM_MIN_CONFIDENCE", "0.6"))
+    SIM_MIN_CONFIDENCE: float = float(os.getenv("SIM_MIN_CONFIDENCE", "0.7"))
+    SIM_MIN_EDGE: float = float(os.getenv("SIM_MIN_EDGE", "0.05"))
 
     @property
     def database_url(self) -> str:
