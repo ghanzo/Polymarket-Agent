@@ -195,10 +195,80 @@
             flex-wrap: wrap;
         }
         .info-bar span { display: flex; align-items: center; gap: 6px; }
+        /* Settings panel */
+        .settings-toggle {
+            background: #1a1a2e; border: 1px solid #2a2a4a; color: #aaa;
+            padding: 4px 12px; border-radius: 8px; cursor: pointer; font-size: 12px;
+            font-family: inherit; transition: border-color 0.2s;
+        }
+        .settings-toggle:hover { border-color: #7c5cfc; color: #fff; }
+        .settings-panel { display: none; margin-bottom: 24px; }
+        .settings-panel.open { display: block; }
+        .settings-grid {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 16px 24px;
+            padding: 20px;
+        }
+        .setting-item label {
+            display: block; font-size: 11px; color: #666; text-transform: uppercase;
+            letter-spacing: 1px; margin-bottom: 6px;
+        }
+        .setting-item input[type="range"] {
+            width: 100%; accent-color: #7c5cfc; cursor: pointer;
+        }
+        .setting-value {
+            font-size: 13px; color: #fff; font-weight: 600; float: right;
+        }
+        .radio-group { display: flex; gap: 8px; }
+        .radio-group label {
+            display: inline-flex; align-items: center; gap: 4px;
+            text-transform: none; letter-spacing: 0; font-size: 13px; color: #ccc;
+            cursor: pointer;
+        }
+        .radio-group input[type="radio"] { accent-color: #7c5cfc; }
+        .trader-toggles { display: flex; gap: 8px; flex-wrap: wrap; }
+        .trader-pill {
+            padding: 4px 14px; border-radius: 16px; font-size: 12px;
+            font-weight: 600; text-transform: uppercase; cursor: pointer;
+            border: 1px solid #2a2a4a; background: #0a0a14; color: #666;
+            font-family: inherit; transition: all 0.2s;
+        }
+        .trader-pill.active { background: #7c5cfc22; color: #7c5cfc; border-color: #7c5cfc; }
+        .trader-pill.active.tag-claude { background: #7c5cfc22; color: #7c5cfc; border-color: #7c5cfc; }
+        .trader-pill.active.tag-grok { background: #f4364c22; color: #f4364c; border-color: #f4364c; }
+        .trader-pill.active.tag-gemini { background: #4285f422; color: #4285f4; border-color: #4285f4; }
+        .trader-pill.active.tag-ensemble { background: #fbbf2422; color: #fbbf24; border-color: #fbbf24; }
+        .setting-saved {
+            color: #4ade80; font-size: 11px; opacity: 0; transition: opacity 0.3s;
+            margin-left: 8px;
+        }
+        .setting-saved.show { opacity: 1; }
+
+        /* Action buttons */
+        .btn-action {
+            padding: 4px 14px; border-radius: 8px; font-size: 12px;
+            font-weight: 600; cursor: pointer; font-family: inherit;
+            border: 1px solid; transition: all 0.2s;
+        }
+        .btn-cycle {
+            background: #1a3a1a; color: #4ade80; border-color: #2d5a2d;
+        }
+        .btn-cycle:hover { background: #2d5a2d; }
+        .btn-cycle:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-close-all {
+            background: #3a1a1a; color: #f87171; border-color: #5a2d2d;
+        }
+        .btn-close-all:hover { background: #5a2d2d; }
+        .btn-close-pos {
+            background: none; border: none; color: #f87171; cursor: pointer;
+            font-size: 14px; padding: 2px 6px; opacity: 0.6; transition: opacity 0.2s;
+        }
+        .btn-close-pos:hover { opacity: 1; }
+
         @media (max-width: 900px) {
             .two-col { grid-template-columns: 1fr; }
             .container { padding: 16px; }
             .leaderboard-grid { grid-template-columns: 1fr; }
+            .settings-grid { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -206,7 +276,9 @@
     <div class="header">
         <h1><span>POLY</span>MARKET Paper Trading</h1>
         <div class="header-right">
+            <button class="btn-action btn-cycle" id="btnRunCycle" onclick="runCycle()">Run Cycle</button>
             <a href="/backtest" style="color: #7c5cfc; text-decoration: none; font-size: 12px; padding: 4px 12px; border: 1px solid #7c5cfc; border-radius: 8px;">Backtest</a>
+            <button class="settings-toggle" id="btnSettings" onclick="toggleSettings()">&#9881; Settings</button>
             <span style="font-size: 11px; color: #555;"><span class="live-dot"></span>Auto-refresh 15s</span>
             <span class="status-badge status-{{ sim.status }}">{{ sim.status }}</span>
         </div>
@@ -220,6 +292,75 @@
             <span>Max bet: {{ "%.0f"|format(config.max_bet_pct * 100) }}%</span>
             {% if sim.last_run %}<span>Last run: <span class="relative-time" data-ts="{{ sim.last_run }}"></span></span>{% endif %}
             {% if sim.last_error %}<span style="color: #f87171;">Error: {{ sim.last_error[:60] }}</span>{% endif %}
+        </div>
+
+        <!-- SETTINGS PANEL -->
+        <div class="settings-panel section" id="settingsPanel">
+            <div class="section-header">
+                <h2>Trading Settings</h2>
+                <span class="setting-saved" id="settingSaved">&#10003; Saved</span>
+            </div>
+            <div class="settings-grid">
+                <div class="setting-item">
+                    <label>Active Traders</label>
+                    <div class="trader-toggles">
+                        {% for tid in ["claude", "grok", "gemini", "ensemble"] %}
+                        <button class="trader-pill tag-{{ tid }} {{ 'active' if tid not in config.paused_traders else '' }}"
+                                data-trader="{{ tid }}" onclick="toggleTrader('{{ tid }}', this)">
+                            {{ tid }}
+                        </button>
+                        {% endfor %}
+                    </div>
+                </div>
+                <div class="setting-item">
+                    <label>Scan Mode</label>
+                    <div class="radio-group">
+                        {% for mode in ["popular", "niche", "mixed"] %}
+                        <label>
+                            <input type="radio" name="scan_mode" value="{{ mode }}"
+                                   {{ 'checked' if config.scan_mode == mode else '' }}
+                                   onchange="updateSetting('SIM_SCAN_MODE', '{{ mode }}')">
+                            {{ mode|capitalize }}
+                        </label>
+                        {% endfor %}
+                    </div>
+                </div>
+                <div class="setting-item">
+                    <label>Kelly Fraction <span class="setting-value" id="val_kelly">{{ config.kelly_fraction }}</span></label>
+                    <input type="range" min="0.1" max="1.0" step="0.05" value="{{ config.kelly_fraction }}"
+                           oninput="sliderChange('SIM_KELLY_FRACTION', this.value, 'val_kelly')">
+                </div>
+                <div class="setting-item">
+                    <label>Min Confidence <span class="setting-value" id="val_conf">{{ config.min_confidence }}</span></label>
+                    <input type="range" min="0.50" max="0.95" step="0.05" value="{{ config.min_confidence }}"
+                           oninput="sliderChange('SIM_MIN_CONFIDENCE', this.value, 'val_conf')">
+                </div>
+                <div class="setting-item">
+                    <label>Min Edge <span class="setting-value" id="val_edge">{{ config.min_edge }}</span></label>
+                    <input type="range" min="0.01" max="0.15" step="0.01" value="{{ config.min_edge }}"
+                           oninput="sliderChange('SIM_MIN_EDGE', this.value, 'val_edge')">
+                </div>
+                <div class="setting-item">
+                    <label>Stop Loss <span class="setting-value" id="val_sl">{{ config.stop_loss }}</span></label>
+                    <input type="range" min="0.10" max="0.50" step="0.05" value="{{ config.stop_loss }}"
+                           oninput="sliderChange('SIM_STOP_LOSS', this.value, 'val_sl')">
+                </div>
+                <div class="setting-item">
+                    <label>Take Profit <span class="setting-value" id="val_tp">{{ config.take_profit }}</span></label>
+                    <input type="range" min="0.25" max="1.00" step="0.05" value="{{ config.take_profit }}"
+                           oninput="sliderChange('SIM_TAKE_PROFIT', this.value, 'val_tp')">
+                </div>
+                <div class="setting-item">
+                    <label>Max Spread <span class="setting-value" id="val_spread">{{ config.max_spread }}</span></label>
+                    <input type="range" min="0.02" max="0.15" step="0.01" value="{{ config.max_spread }}"
+                           oninput="sliderChange('SIM_MAX_SPREAD', this.value, 'val_spread')">
+                </div>
+                <div class="setting-item">
+                    <label>Max Position Days <span class="setting-value" id="val_days">{{ config.max_position_days }}</span></label>
+                    <input type="range" min="7" max="30" step="1" value="{{ config.max_position_days }}"
+                           oninput="sliderChange('SIM_MAX_POSITION_DAYS', this.value, 'val_days')">
+                </div>
+            </div>
         </div>
 
         <!-- LEADERBOARD -->
@@ -350,7 +491,12 @@
         <div class="section">
             <div class="section-header">
                 <h2>Open Positions</h2>
-                <span class="badge">{{ open_bets|length }} active</span>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span class="badge">{{ open_bets|length }} active</span>
+                    {% if open_bets %}
+                    <button class="btn-action btn-close-all" onclick="closeAll()">Close All</button>
+                    {% endif %}
+                </div>
             </div>
             {% if open_bets %}
             <table>
@@ -364,6 +510,7 @@
                         <th>Current</th>
                         <th>P&L</th>
                         <th>Age</th>
+                        <th></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -382,6 +529,7 @@
                             {{ "%.0f"|format(bet._age_days) }}d
                             {% if bet._age_days >= max_position_days %}<span title="Stale — will auto-close if idle">&#9888;</span>{% endif %}
                         </td>
+                        <td><button class="btn-close-pos" title="Close position" onclick="closePosition({{ bet.id }}, this)">&times;</button></td>
                     </tr>
                 {% endfor %}
                 </tbody>
@@ -549,6 +697,91 @@
 
         loadChart();
         setTimeout(() => location.reload(), 15000);
+
+        // --- Settings panel ---
+        const settingsPanel = document.getElementById('settingsPanel');
+        const savedIndicator = document.getElementById('settingSaved');
+
+        // Restore collapsed/expanded state from localStorage
+        if (localStorage.getItem('settingsOpen') === '1') {
+            settingsPanel.classList.add('open');
+        }
+
+        function toggleSettings() {
+            settingsPanel.classList.toggle('open');
+            localStorage.setItem('settingsOpen', settingsPanel.classList.contains('open') ? '1' : '0');
+        }
+
+        function flashSaved() {
+            savedIndicator.classList.add('show');
+            setTimeout(() => savedIndicator.classList.remove('show'), 1500);
+        }
+
+        let _debounceTimers = {};
+        function updateSetting(key, value) {
+            clearTimeout(_debounceTimers[key]);
+            _debounceTimers[key] = setTimeout(() => {
+                fetch('/api/settings', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({key, value})
+                }).then(r => r.json()).then(d => {
+                    if (d.ok) flashSaved();
+                }).catch(e => console.error('Setting update failed:', e));
+            }, 300);
+        }
+
+        function sliderChange(key, value, displayId) {
+            document.getElementById(displayId).textContent = value;
+            updateSetting(key, value);
+        }
+
+        function toggleTrader(tid, btn) {
+            btn.classList.toggle('active');
+            const pills = document.querySelectorAll('.trader-pill');
+            const paused = [];
+            pills.forEach(p => {
+                if (!p.classList.contains('active')) paused.push(p.dataset.trader);
+            });
+            updateSetting('PAUSED_TRADERS', paused.join(','));
+        }
+
+        // --- Action buttons ---
+        function runCycle() {
+            const btn = document.getElementById('btnRunCycle');
+            btn.disabled = true;
+            btn.textContent = 'Running...';
+            fetch('/api/cycle', {method: 'POST'})
+                .then(r => r.json())
+                .then(d => {
+                    if (d.error) { alert(d.error); btn.disabled = false; btn.textContent = 'Run Cycle'; }
+                    // Button stays disabled; page will reload in 15s
+                })
+                .catch(e => { console.error(e); btn.disabled = false; btn.textContent = 'Run Cycle'; });
+        }
+
+        function closePosition(betId, btn) {
+            if (!confirm('Close this position at current price?')) return;
+            const row = btn.closest('tr');
+            fetch('/api/close-position/' + betId, {method: 'POST'})
+                .then(r => r.json())
+                .then(d => {
+                    if (d.ok) { row.style.opacity = '0.3'; row.style.pointerEvents = 'none'; }
+                    else alert(d.error || 'Failed to close position');
+                })
+                .catch(e => console.error(e));
+        }
+
+        function closeAll() {
+            if (!confirm('Close ALL open positions at current prices?')) return;
+            fetch('/api/close-all', {method: 'POST'})
+                .then(r => r.json())
+                .then(d => {
+                    if (d.ok) location.reload();
+                    else alert(d.error || 'Failed');
+                })
+                .catch(e => console.error(e));
+        }
     </script>
 </body>
 </html>

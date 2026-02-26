@@ -57,6 +57,7 @@ def _run_cycle():
     from src.scanner import MarketScanner
     from src.simulator import Simulator  # Also used for performance reviews below
 
+    config.load_runtime_overrides()
     cli = PolymarketCLI()
     scanner = MarketScanner(cli)
     paused = set(config.PAUSED_TRADERS) if hasattr(config, "PAUSED_TRADERS") else set()
@@ -309,6 +310,14 @@ async def dashboard(request: Request):
             "starting_balance": config.SIM_STARTING_BALANCE,
             "max_bet_pct": config.SIM_MAX_BET_PCT,
             "min_confidence": config.SIM_MIN_CONFIDENCE,
+            "kelly_fraction": config.SIM_KELLY_FRACTION,
+            "min_edge": config.SIM_MIN_EDGE,
+            "stop_loss": config.SIM_STOP_LOSS,
+            "take_profit": config.SIM_TAKE_PROFIT,
+            "max_spread": config.SIM_MAX_SPREAD,
+            "scan_mode": config.SIM_SCAN_MODE,
+            "max_position_days": config.SIM_MAX_POSITION_DAYS,
+            "paused_traders": config.PAUSED_TRADERS,
         },
     })
 
@@ -374,3 +383,54 @@ async def api_backtest(run_id: str):
     summary = db.get_backtest_summary(run_id)
     results = db.get_backtest_results(run_id)
     return JSONResponse({"summary": summary, "results": results})
+
+
+# --- Dashboard Controls API ---
+
+ALLOWED_SETTINGS = {
+    "PAUSED_TRADERS", "SIM_KELLY_FRACTION", "SIM_MIN_CONFIDENCE",
+    "SIM_MIN_EDGE", "SIM_STOP_LOSS", "SIM_TAKE_PROFIT",
+    "SIM_MAX_SPREAD", "SIM_SCAN_MODE", "SIM_MAX_POSITION_DAYS",
+}
+
+
+@app.post("/api/settings")
+async def update_setting(request: Request):
+    body = await request.json()
+    key = body.get("key")
+    value = body.get("value")
+    if key not in ALLOWED_SETTINGS:
+        return JSONResponse({"error": "Invalid key"}, status_code=400)
+    db.set_runtime_config(key, str(value))
+    config.load_runtime_overrides()
+    return JSONResponse({"ok": True, "key": key, "value": value})
+
+
+@app.post("/api/cycle")
+async def force_cycle():
+    if sim_state["status"] == "running":
+        return JSONResponse({"error": "Cycle already running"}, status_code=409)
+    asyncio.create_task(asyncio.to_thread(_run_cycle))
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/close-position/{bet_id}")
+async def close_position(bet_id: int):
+    bet = db.get_bet_by_id(bet_id)
+    if not bet or bet.status.value != "OPEN":
+        return JSONResponse({"error": "Bet not found or not open"}, status_code=404)
+    exit_price = bet.current_price or bet.entry_price
+    db.close_bet(bet.id, exit_price)
+    pnl = bet.shares * exit_price - bet.amount
+    return JSONResponse({"ok": True, "pnl": round(pnl, 2)})
+
+
+@app.post("/api/close-all")
+async def close_all_positions():
+    open_bets = db.get_all_open_bets()
+    closed = 0
+    for bet in open_bets:
+        exit_price = bet.current_price or bet.entry_price
+        db.close_bet(bet.id, exit_price)
+        closed += 1
+    return JSONResponse({"ok": True, "closed": closed})

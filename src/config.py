@@ -87,6 +87,28 @@ class Config:
     ARB_MIN_EDGE: float = float(os.getenv("ARB_MIN_EDGE", "0.005"))
     ARB_MAX_POSITION_USD: float = float(os.getenv("ARB_MAX_POSITION_USD", "50"))
 
+    def load_runtime_overrides(self):
+        """Load runtime config overrides from DB. Called at cycle start."""
+        try:
+            from src import db
+            overrides = db.get_runtime_config()
+            type_map = {
+                "PAUSED_TRADERS": lambda v: [t.strip() for t in v.split(",") if t.strip()],
+                "SIM_KELLY_FRACTION": float,
+                "SIM_MIN_CONFIDENCE": float,
+                "SIM_MIN_EDGE": float,
+                "SIM_STOP_LOSS": float,
+                "SIM_TAKE_PROFIT": float,
+                "SIM_MAX_SPREAD": float,
+                "SIM_SCAN_MODE": str,
+                "SIM_MAX_POSITION_DAYS": int,
+            }
+            for key, cast in type_map.items():
+                if key in overrides:
+                    setattr(self, key, cast(overrides[key]))
+        except Exception:
+            pass  # DB not available yet at startup
+
     @property
     def database_url(self) -> str:
         return (

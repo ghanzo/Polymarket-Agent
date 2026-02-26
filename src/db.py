@@ -161,6 +161,13 @@ def init_db():
                     PRIMARY KEY (trader_id, bucket_min)
                 );
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS runtime_config (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+            """)
             # Initialize portfolios for each trader
             for tid in TRADER_IDS:
                 cur.execute(
@@ -194,6 +201,44 @@ def get_all_portfolios() -> list[Portfolio]:
     portfolios = [get_portfolio(tid) for tid in TRADER_IDS]
     portfolios.sort(key=lambda p: p.portfolio_value, reverse=True)
     return portfolios
+
+
+def get_runtime_config() -> dict[str, str]:
+    """Return all runtime config overrides as key-value dict."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT key, value FROM runtime_config")
+            return {row["key"]: row["value"] for row in cur.fetchall()}
+
+
+def set_runtime_config(key: str, value: str):
+    """Upsert a runtime config override."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO runtime_config (key, value, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (key)
+                DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+            """, (key, value))
+        conn.commit()
+
+
+def get_bet_by_id(bet_id: int) -> Bet | None:
+    """Return a single bet by ID, or None."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM bets WHERE id = %s", (bet_id,))
+            row = cur.fetchone()
+            return _row_to_bet(row) if row else None
+
+
+def get_all_open_bets() -> list[Bet]:
+    """Return all OPEN bets across all traders."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM bets WHERE status = 'OPEN' ORDER BY placed_at")
+            return [_row_to_bet(r) for r in cur.fetchall()]
 
 
 def get_open_bets(trader_id: str) -> list[Bet]:
