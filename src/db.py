@@ -292,6 +292,29 @@ def close_bet(bet_id: int, exit_price: float):
         conn.commit()
 
 
+def get_resolved_bets(trader_id: str) -> list[Bet]:
+    """Return all WON/LOST bets for a trader."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM bets WHERE trader_id = %s AND status IN ('WON', 'LOST') ORDER BY resolved_at",
+                (trader_id,),
+            )
+            return [_row_to_bet(r) for r in cur.fetchall()]
+
+
+def get_analysis_for_bet(trader_id: str, market_id: str) -> dict | None:
+    """Return the most recent analysis for a trader+market pair."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM analysis_log WHERE trader_id = %s AND market_id = %s ORDER BY created_at DESC LIMIT 1",
+                (trader_id, market_id),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
 def save_analysis(trader_id: str, market_id: str, model: str, recommendation: str,
                   confidence: float, estimated_probability: float, reasoning: str):
     with get_conn() as conn:

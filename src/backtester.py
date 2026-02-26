@@ -71,81 +71,95 @@ class BacktestSummary:
         return self.total_theoretical_pnl / self.predictions_made if self.predictions_made > 0 else 0.0
 
 
+def _is_valid_resolved(m: dict, cutoff: datetime) -> bool:
+    """Check whether a market dict qualifies as a valid resolved market."""
+    if not m.get("closed", False):
+        return False
+    outcome_prices = m.get("outcomePrices")
+    if not outcome_prices:
+        return False
+    if isinstance(outcome_prices, str):
+        try:
+            prices = json.loads(outcome_prices)
+        except (json.JSONDecodeError, TypeError):
+            return False
+    else:
+        prices = outcome_prices
+    if len(prices) < 2:
+        return False
+    yes_price = float(prices[0])
+    if not (yes_price > 0.9 or yes_price < 0.1):
+        return False
+    end_date = m.get("endDate")
+    if end_date:
+        try:
+            end = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+            if end < cutoff:
+                return False
+        except (ValueError, TypeError):
+            pass
+    tokens_raw = m.get("clobTokenIds", "[]")
+    tokens = json.loads(tokens_raw) if isinstance(tokens_raw, str) else (tokens_raw or [])
+    if not tokens:
+        return False
+    try:
+        vol = float(m.get("volume", "0") or "0")
+        if vol < 5000:
+            return False
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
+# Search queries designed to find a diverse set of recently resolved markets
+_BACKTEST_SEARCH_QUERIES = [
+    "February 2026", "March 2026", "January 2026",
+    "Bitcoin", "Ethereum", "crypto",
+    "Oscar", "Academy Award",
+    "Super Bowl", "NFL", "NBA",
+    "election", "Trump", "congress",
+    "NVIDIA", "S&P 500", "stock",
+    "Fed", "inflation", "interest rate",
+]
+
+
 def fetch_resolved_markets(cli: PolymarketCLI, days: int = 30, max_markets: int = 50) -> list[dict]:
-    """Fetch recently resolved markets from Polymarket."""
+    """Fetch recently resolved markets from Polymarket.
+
+    Uses `markets search` with diverse queries since `markets list --active false`
+    returns zero-volume junk with broken sorting. Deduplicates by market ID.
+    """
     logger.info("Fetching resolved markets from last %d days...", days)
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    resolved = []
-    offset = 0
-    page_size = 100
+    seen_ids: set[str] = set()
+    resolved: list[dict] = []
 
-    while len(resolved) < max_markets:
+    for query in _BACKTEST_SEARCH_QUERIES:
+        if len(resolved) >= max_markets:
+            break
         try:
-            page = cli.markets_list(limit=page_size, offset=offset, active=False, order="volume")
-            if not isinstance(page, list) or len(page) == 0:
-                break
-
-            for m in page:
-                # Must be closed with outcome prices
-                if not m.get("closed", False):
+            results = cli.markets_search(query, limit=100)
+            if not isinstance(results, list):
+                continue
+            for m in results:
+                mid = m.get("id", "")
+                if mid in seen_ids:
                     continue
+                seen_ids.add(mid)
+                if not _is_valid_resolved(m, cutoff):
+                    continue
+
                 outcome_prices = m.get("outcomePrices")
-                if not outcome_prices:
-                    continue
-
-                # Parse outcome prices
-                if isinstance(outcome_prices, str):
-                    try:
-                        prices = json.loads(outcome_prices)
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-                else:
-                    prices = outcome_prices
-
-                if len(prices) < 2:
-                    continue
-
-                # Check the outcome is decisive (not ambiguous)
+                prices = json.loads(outcome_prices) if isinstance(outcome_prices, str) else outcome_prices
                 yes_price = float(prices[0])
-                if not (yes_price > 0.9 or yes_price < 0.1):
-                    continue  # Ambiguous resolution, skip
-
-                # Check it closed within our time window
-                end_date = m.get("endDate")
-                if end_date:
-                    try:
-                        end = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
-                        if end < cutoff:
-                            continue  # Too old
-                    except (ValueError, TypeError):
-                        pass
-
-                # Must have token IDs and reasonable volume
-                tokens_raw = m.get("clobTokenIds", "[]")
-                tokens = json.loads(tokens_raw) if isinstance(tokens_raw, str) else (tokens_raw or [])
-                if not tokens:
-                    continue
-
-                try:
-                    vol = float(m.get("volume", "0") or "0")
-                    if vol < 5000:
-                        continue  # Skip low-volume noise
-                except (ValueError, TypeError):
-                    continue
-
                 m["_parsed_outcome_yes"] = yes_price > 0.5
                 m["_parsed_prices"] = prices
                 resolved.append(m)
 
                 if len(resolved) >= max_markets:
                     break
-
-            offset += page_size
-            if offset >= 500:
-                break
         except CLIError as e:
-            logger.warning("CLI error fetching closed markets: %s", e)
-            break
+            logger.warning("CLI error searching '%s': %s", query, e)
 
     logger.info("Found %d resolved markets", len(resolved))
     return resolved

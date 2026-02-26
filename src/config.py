@@ -43,6 +43,7 @@ class Config:
     # Simulation settings
     SIM_STARTING_BALANCE: float = float(os.getenv("SIM_STARTING_BALANCE", "1000"))
     SIM_MAX_BET_PCT: float = float(os.getenv("SIM_MAX_BET_PCT", "0.05"))
+    SIM_KELLY_FRACTION: float = float(os.getenv("SIM_KELLY_FRACTION", "0.5"))
     SIM_MIN_CONFIDENCE: float = float(os.getenv("SIM_MIN_CONFIDENCE", "0.7"))
     SIM_MIN_EDGE: float = float(os.getenv("SIM_MIN_EDGE", "0.05"))
     SIM_STOP_LOSS: float = float(os.getenv("SIM_STOP_LOSS", "0.25"))

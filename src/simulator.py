@@ -59,7 +59,7 @@ class Simulator:
             side=side,
             bankroll=portfolio.balance,
             max_bet_pct=config.SIM_MAX_BET_PCT,
-            fraction=0.25,  # quarter-Kelly
+            fraction=config.SIM_KELLY_FRACTION,
             spread=market.spread or 0.0,
         )
 
@@ -142,4 +142,46 @@ class Simulator:
                     resolved.append(bet)
             except (CLIError, ValueError, TypeError, IndexError):
                 continue
+
+        if resolved:
+            self._update_live_calibration()
+
         return resolved
+
+    def _update_live_calibration(self):
+        """Recompute calibration buckets from resolved bets + analysis_log."""
+        try:
+            resolved_bets = db.get_resolved_bets(self.trader_id)
+            if len(resolved_bets) < config.MIN_CALIBRATION_SAMPLES:
+                return
+
+            # Match resolved bets with their analysis predictions
+            predictions = []
+            for bet in resolved_bets:
+                analysis = db.get_analysis_for_bet(self.trader_id, bet.market_id)
+                if analysis and analysis.get("estimated_probability") is not None:
+                    yes_won = bet.status == BetStatus.WON if bet.side == Side.YES else bet.status == BetStatus.LOST
+                    predictions.append((analysis["estimated_probability"], yes_won))
+
+            if len(predictions) < config.MIN_CALIBRATION_SAMPLES:
+                return
+
+            # Compute calibration buckets
+            buckets = [
+                (0.0, 0.1), (0.1, 0.2), (0.2, 0.3), (0.3, 0.4), (0.4, 0.5),
+                (0.5, 0.6), (0.6, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.01),
+            ]
+            for bmin, bmax in buckets:
+                in_bucket = [(p, o) for p, o in predictions if bmin <= p < bmax]
+                if len(in_bucket) < config.MIN_CALIBRATION_SAMPLES:
+                    continue
+                actual_rate = sum(1 for _, o in in_bucket if o) / len(in_bucket)
+                center = (bmin + bmax) / 2
+                db.save_calibration(
+                    trader_id=self.trader_id,
+                    bucket_min=bmin, bucket_max=bmax,
+                    predicted_center=center, actual_rate=actual_rate,
+                    sample_count=len(in_bucket),
+                )
+        except Exception:
+            pass  # Calibration is best-effort
