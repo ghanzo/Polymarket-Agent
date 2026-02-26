@@ -579,7 +579,7 @@ class Analyzer(ABC):
         pass
 
     MAX_RETRIES = 2
-    RETRY_DELAYS = [5, 15]  # seconds
+    RETRY_DELAYS = [15, 45]  # seconds — generous backoff for rate limits
 
     def _system_prompt(self) -> str:
         """Return a system-level instruction for calibrated prediction analysis."""
@@ -811,7 +811,8 @@ class ClaudeAnalyzer(Analyzer):
     def _call_model(self, prompt: str) -> str:
         response = self.client.messages.create(
             model=self.MODEL,
-            max_tokens=1024,
+            max_tokens=2048,
+            timeout=90,
             system=self._system_prompt(),
             messages=[{"role": "user", "content": prompt}],
         )
@@ -832,10 +833,12 @@ class GeminiAnalyzer(Analyzer):
         self.client = genai.Client(api_key=api_key or config.GEMINI_API_KEY)
 
     def _call_model(self, prompt: str) -> str:
+        from google.genai import types
         full_prompt = f"[System Instructions]\n{self._system_prompt()}\n\n[User Query]\n{prompt}"
         response = self.client.models.generate_content(
             model=self.MODEL,
             contents=full_prompt,
+            config=types.GenerateContentConfig(max_output_tokens=2048),
         )
         return response.text
 
@@ -859,7 +862,8 @@ class GrokAnalyzer(Analyzer):
     def _call_model(self, prompt: str) -> str:
         response = self.client.chat.completions.create(
             model=self.MODEL,
-            max_tokens=1024,
+            max_tokens=2048,
+            timeout=90,
             messages=[
                 {"role": "system", "content": self._system_prompt()},
                 {"role": "user", "content": prompt},

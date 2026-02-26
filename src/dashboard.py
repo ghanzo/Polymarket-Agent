@@ -265,15 +265,16 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    portfolios = db.get_all_portfolios()
-    all_bets = db.get_all_bets()
-    analyses = db.get_recent_analyses(limit=40)
+    # Run DB queries in parallel threads to avoid blocking the event loop
+    portfolios, all_bets, analyses, reviews = await asyncio.gather(
+        asyncio.to_thread(db.get_all_portfolios),
+        asyncio.to_thread(db.get_all_bets),
+        asyncio.to_thread(db.get_recent_analyses, limit=40),
+        asyncio.to_thread(db.get_latest_performance_reviews),
+    )
 
     open_bets = [b for b in all_bets if b.status.value == "OPEN"]
     closed_bets = [b for b in all_bets if b.status.value != "OPEN"]
-
-    # Performance reviews
-    reviews = db.get_latest_performance_reviews()
 
     # Add position age to open bets for display
     now = datetime.now(timezone.utc)
