@@ -294,6 +294,50 @@
             </div>
         </div>
 
+        <!-- PERFORMANCE REVIEW -->
+        {% if reviews %}
+        <div class="section">
+            <div class="section-header">
+                <h2>Performance Review</h2>
+                <span class="badge">Learning Loop</span>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Trader</th>
+                        <th>Accuracy</th>
+                        <th>Brier Score</th>
+                        <th>Total P&L</th>
+                        <th>Avg Confidence</th>
+                        <th>Resolved</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for r in reviews %}
+                    <tr>
+                        <td><span class="trader-tag tag-{{ r.trader_id }}">{{ r.trader_id }}</span></td>
+                        <td>{{ "%.0f"|format(r.accuracy * 100) }}%
+                            <span style="font-size: 11px; color: #666;">({{ r.correct }}/{{ r.total_resolved }})</span>
+                        </td>
+                        <td>{{ "%.4f"|format(r.brier_score or 0) }}
+                            <span style="font-size: 10px; color: #666;">
+                                {% if r.brier_score and r.brier_score < 0.15 %}(excellent)
+                                {% elif r.brier_score and r.brier_score < 0.25 %}(good)
+                                {% elif r.brier_score %}(needs work){% endif %}
+                            </span>
+                        </td>
+                        <td class="{{ 'positive' if r.total_pnl >= 0 else 'negative' }}">
+                            ${{ "%+.2f"|format(r.total_pnl) }}
+                        </td>
+                        <td>{{ "%.0f"|format((r.avg_confidence or 0) * 100) }}%</td>
+                        <td>{{ r.total_resolved }}</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+
         <!-- PERFORMANCE CHART -->
         <div class="chart-section">
             <h2>Portfolio Performance</h2>
@@ -319,6 +363,7 @@
                         <th>Entry</th>
                         <th>Current</th>
                         <th>P&L</th>
+                        <th>Age</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -332,6 +377,10 @@
                         <td>{{ "%.3f"|format(bet.current_price or 0) }}</td>
                         <td class="{{ 'positive' if bet.unrealized_pnl >= 0 else 'negative' }}">
                             ${{ "%+.2f"|format(bet.unrealized_pnl) }}
+                        </td>
+                        <td style="{{ 'color: #f87171; font-weight: 700;' if bet._age_days >= max_position_days else '' }}">
+                            {{ "%.0f"|format(bet._age_days) }}d
+                            {% if bet._age_days >= max_position_days %}<span title="Stale — will auto-close if idle">&#9888;</span>{% endif %}
                         </td>
                     </tr>
                 {% endfor %}

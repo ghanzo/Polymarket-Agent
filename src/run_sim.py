@@ -7,6 +7,7 @@ Usage:
 
 from src.cli import PolymarketCLI
 from src.analyzer import get_individual_analyzers, EnsembleAnalyzer, _build_web_context
+from src.config import config
 from src.scanner import MarketScanner
 from src.simulator import Simulator
 from src.models import Recommendation
@@ -19,12 +20,12 @@ def run():
     print("=" * 60)
 
     cli = PolymarketCLI()
-    print(f"\n[1/5] CLI: {cli.version()}")
+    print(f"\n[1/7] CLI: {cli.version()}")
 
-    print("\n[2/5] Initializing database...")
+    print("\n[2/7] Initializing database...")
     db.init_db()
 
-    print("\n[3/5] Scanning markets...")
+    print("\n[3/7] Scanning markets...")
     scanner = MarketScanner(cli)
     markets = scanner.scan(max_markets=30)
     print(f"  Found {len(markets)} candidates")
@@ -34,7 +35,7 @@ def run():
     if len(markets) > 10:
         print(f"  ... and {len(markets) - 10} more")
 
-    print("\n[4/6] Fetching web context...")
+    print("\n[4/7] Fetching web context...")
     web_contexts = {}
     for market in markets:
         ctx = _build_web_context(market)
@@ -43,7 +44,7 @@ def run():
             print(f"  Web context for: {market.question[:50]}")
     print(f"  Enriched {sum(1 for c in web_contexts.values() if c)} markets with web search")
 
-    print("\n[5/6] Running per-model analysis & betting...")
+    print("\n[5/7] Running per-model analysis & betting...")
     analyzers = get_individual_analyzers()
 
     # Cache per-model results for ensemble reuse
@@ -89,7 +90,10 @@ def run():
                 cached = market_results.get(market.id, [])
                 if not cached:
                     continue
-                analysis = ensemble.aggregate(market, cached)
+                if config.USE_DEBATE_MODE:
+                    analysis = ensemble.debate(market, cached, web_contexts.get(market.id, ""))
+                else:
+                    analysis = ensemble.aggregate(market, cached)
                 db.save_analysis(
                     "ensemble", market.id, analysis.model,
                     analysis.recommendation.value,
@@ -106,8 +110,20 @@ def run():
         sim.check_resolutions()
         print(f"  {bets} bets placed")
 
+    # Performance review
+    print("\n[6/7] Performance Review")
+    for tid in ["grok"]:  # Active traders only
+        sim = Simulator(cli, tid)
+        review = sim.run_performance_review()
+        if review:
+            print(f"  {tid}: {review['correct']}/{review['total_resolved']} correct "
+                  f"({review['accuracy']:.0%}), Brier: {review['brier_score']:.4f}, "
+                  f"P&L: ${review['total_pnl']:+.2f}")
+        else:
+            print(f"  {tid}: no resolved bets yet")
+
     # Leaderboard
-    print("\n[6/6] LEADERBOARD")
+    print("\n[7/7] LEADERBOARD")
     print("  " + "-" * 56)
     print(f"  {'Trader':<12} {'Value':>10} {'P&L':>10} {'Bets':>6} {'Win%':>6}")
     print("  " + "-" * 56)

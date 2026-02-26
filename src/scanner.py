@@ -44,10 +44,41 @@ class MarketScanner:
                     continue
                 enriched.append(market)
 
-        # Score and sort
-        enriched.sort(key=lambda m: self._score(m), reverse=True)
+        # Score and sort based on scan mode
+        mode = config.SIM_SCAN_MODE
 
-        return enriched[:max_markets]
+        if mode == "niche":
+            enriched.sort(key=lambda m: self._score_inefficiency(m), reverse=True)
+        elif mode == "mixed":
+            # Score both ways, allocate slots
+            popular = sorted(enriched, key=lambda m: self._score(m), reverse=True)
+            niche = sorted(enriched, key=lambda m: self._score_inefficiency(m), reverse=True)
+
+            # Take top N popular, then top M niche (deduplicated)
+            result = popular[:config.SIM_MIXED_POPULAR_SLOTS]
+            seen_ids = {m.id for m in result}
+            for m in niche:
+                if m.id not in seen_ids:
+                    result.append(m)
+                    seen_ids.add(m.id)
+                    if len(result) >= max_markets:
+                        break
+            enriched = result
+        else:  # "popular" (default)
+            enriched.sort(key=lambda m: self._score(m), reverse=True)
+
+        # Deduplicate by event — keep only top-scored markets per event
+        seen_events: dict[str, int] = {}
+        deduped = []
+        for market in enriched:
+            eid = market.event_id
+            if eid:
+                seen_events[eid] = seen_events.get(eid, 0) + 1
+                if seen_events[eid] > config.SIM_MAX_BETS_PER_EVENT:
+                    continue
+            deduped.append(market)
+
+        return deduped[:max_markets]
 
     def _passes_filter(self, market: Market) -> bool:
         """Fast filter on raw market data."""
@@ -68,10 +99,11 @@ class MarketScanner:
             except (ValueError, TypeError):
                 pass
 
-        # Skip 5-minute crypto noise markets
-        q = market.question.lower()
-        if "up or down" in q and ("am" in q or "pm" in q):
-            return False
+        # Skip 5-minute crypto noise markets (configurable)
+        if config.FILTER_CRYPTO_NOISE:
+            q = market.question.lower()
+            if "up or down" in q and ("am" in q or "pm" in q):
+                return False
 
         return True
 
@@ -101,13 +133,17 @@ class MarketScanner:
         except (ValueError, TypeError):
             pass
 
-        # Prefer markets with reasonable time horizon (1 day to 3 months)
+        # Graduated time-to-resolution scoring
         if market.end_date:
             try:
                 end = datetime.fromisoformat(market.end_date.replace("Z", "+00:00"))
                 days_left = (end - datetime.now(timezone.utc)).total_seconds() / 86400
-                if 1 <= days_left <= 90:
+                if 1 <= days_left <= 7:
+                    score += 3.0  # Prime resolution window
+                elif 7 < days_left <= 30:
                     score += 2.0
+                elif 30 < days_left <= 90:
+                    score += 1.0
                 elif days_left > 90:
                     score += 0.5
             except (ValueError, TypeError):
@@ -123,6 +159,87 @@ class MarketScanner:
                 break
 
         # Spread penalty — tight spreads are better
+        if market.spread is not None:
+            if market.spread < 0.03:
+                score += 1.0
+            elif market.spread > 0.10:
+                score -= 1.0
+
+        return score
+
+    def _score_inefficiency(self, market: Market) -> float:
+        """Score markets for LLM edge potential (inverse of popularity)."""
+        score = 0.0
+
+        # Thin market = less efficient pricing
+        try:
+            vol = float(market.volume)
+            if vol < 10_000:
+                score += 3.0
+            elif vol < 100_000:
+                score += 2.0
+            elif vol < 500_000:
+                score += 1.0
+        except (ValueError, TypeError):
+            pass
+
+        # New market = info asymmetry
+        if market.created_at:
+            try:
+                created = datetime.fromisoformat(market.created_at.replace("Z", "+00:00"))
+                age_days = (datetime.now(timezone.utc) - created).total_seconds() / 86400
+                if age_days < 1:
+                    score += 3.0
+                elif age_days < 3:
+                    score += 2.0
+                elif age_days < 7:
+                    score += 1.0
+            except (ValueError, TypeError):
+                pass
+
+        # Price indecision near 50%
+        if market.midpoint and 0.40 < market.midpoint < 0.60:
+            if market.price_history:
+                prices = [float(p.get("p", 0)) for p in market.price_history if p.get("p")]
+                if prices and (max(prices) - min(prices)) < 0.10:
+                    score += 1.5  # Stagnant near equilibrium
+            else:
+                score += 1.0
+
+        # Order book imbalance with low depth
+        if market.order_book:
+            bids = market.order_book.get("bids", [])
+            asks = market.order_book.get("asks", [])
+            bid_depth = sum(float(b.get("size", 0)) for b in bids)
+            ask_depth = sum(float(a.get("size", 0)) for a in asks)
+            total = bid_depth + ask_depth
+            if total > 0 and total < 50_000:
+                imbalance = abs(bid_depth - ask_depth) / total
+                if imbalance > 0.25:
+                    score += 1.0
+
+        # Niche category bonus
+        q = market.question.lower()
+        niche_keywords = ["fda", "spacex", "launch", "approval", "vaccine",
+                          "governor", "mayor", "state", "local"]
+        for kw in niche_keywords:
+            if kw in q:
+                score += 1.0
+                break
+
+        # Time-to-resolution still matters
+        if market.end_date:
+            try:
+                end = datetime.fromisoformat(market.end_date.replace("Z", "+00:00"))
+                days_left = (end - datetime.now(timezone.utc)).total_seconds() / 86400
+                if 1 <= days_left <= 7:
+                    score += 2.0
+                elif 7 < days_left <= 30:
+                    score += 1.0
+            except (ValueError, TypeError):
+                pass
+
+        # Spread penalty (same as popularity scorer)
         if market.spread is not None:
             if market.spread < 0.03:
                 score += 1.0
@@ -164,5 +281,38 @@ class MarketScanner:
                 market.price_history = history[-7:]  # Last 7 data points
         except (CLIError, ValueError, TypeError):
             pass
+
+        # Event context enrichment (best-effort)
+        if config.USE_EVENT_CONTEXT:
+            try:
+                detail = self.cli.markets_get(market.id)
+                if isinstance(detail, dict):
+                    market.created_at = detail.get("createdAt") or detail.get("created_at")
+                    event_id = detail.get("eventId") or detail.get("event_id")
+                    if event_id:
+                        market.event_id = str(event_id)
+                        try:
+                            event = self.cli.events_get(event_id)
+                            if isinstance(event, dict):
+                                market.event_title = event.get("title") or event.get("name")
+                                raw_markets = event.get("markets", [])
+                                related = []
+                                for rm in raw_markets:
+                                    rm_id = str(rm.get("id", ""))
+                                    if rm_id == market.id:
+                                        continue
+                                    related.append({
+                                        "question": rm.get("question", ""),
+                                        "midpoint": rm.get("midpoint"),
+                                        "volume": rm.get("volume", "0"),
+                                    })
+                                    if len(related) >= 5:
+                                        break
+                                if related:
+                                    market.related_markets = related
+                        except (CLIError, ValueError, TypeError):
+                            pass
+            except (CLIError, ValueError, TypeError):
+                pass
 
         return market

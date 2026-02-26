@@ -40,6 +40,13 @@ class Config:
     USE_CALIBRATION: bool = os.getenv("USE_CALIBRATION", "true").lower() == "true"
     MIN_CALIBRATION_SAMPLES: int = int(os.getenv("MIN_CALIBRATION_SAMPLES", "5"))
 
+    # Context enrichment & debate
+    USE_EVENT_CONTEXT: bool = os.getenv("USE_EVENT_CONTEXT", "true").lower() == "true"
+    USE_MULTI_SEARCH: bool = os.getenv("USE_MULTI_SEARCH", "false").lower() == "true"
+    WEB_SEARCH_QUERIES: int = int(os.getenv("WEB_SEARCH_QUERIES", "2"))
+    USE_DEBATE_MODE: bool = os.getenv("USE_DEBATE_MODE", "false").lower() == "true"
+    DEBATE_SYNTHESIZER: str = os.getenv("DEBATE_SYNTHESIZER", "grok")
+
     # Simulation settings
     SIM_STARTING_BALANCE: float = float(os.getenv("SIM_STARTING_BALANCE", "1000"))
     SIM_MAX_BET_PCT: float = float(os.getenv("SIM_MAX_BET_PCT", "0.05"))
@@ -50,6 +57,35 @@ class Config:
     SIM_TAKE_PROFIT: float = float(os.getenv("SIM_TAKE_PROFIT", "0.50"))
     SIM_MAX_SPREAD: float = float(os.getenv("SIM_MAX_SPREAD", "0.08"))
     BACKTEST_ASSUMED_SPREAD: float = float(os.getenv("BACKTEST_ASSUMED_SPREAD", "0.04"))
+
+    # Trailing stop
+    SIM_TRAILING_BREAKEVEN_TRIGGER: float = float(os.getenv("SIM_TRAILING_BREAKEVEN_TRIGGER", "0.20"))
+    SIM_TRAILING_PROFIT_TRIGGER: float = float(os.getenv("SIM_TRAILING_PROFIT_TRIGGER", "0.35"))
+    SIM_TRAILING_PROFIT_LOCK: float = float(os.getenv("SIM_TRAILING_PROFIT_LOCK", "0.15"))
+
+    # Event concentration
+    SIM_MAX_BETS_PER_EVENT: int = int(os.getenv("SIM_MAX_BETS_PER_EVENT", "2"))
+
+    # Ensemble
+    SIM_ENSEMBLE_MIN_CONFIDENCE: float = float(os.getenv("SIM_ENSEMBLE_MIN_CONFIDENCE", "0.60"))
+
+    # Scan mode: "popular" (default), "niche", "mixed"
+    SIM_SCAN_MODE: str = os.getenv("SIM_SCAN_MODE", "mixed")
+    SIM_MIXED_POPULAR_SLOTS: int = int(os.getenv("SIM_MIXED_POPULAR_SLOTS", "20"))
+    SIM_MIXED_NICHE_SLOTS: int = int(os.getenv("SIM_MIXED_NICHE_SLOTS", "10"))
+
+    # Stale position management
+    SIM_MAX_POSITION_DAYS: int = int(os.getenv("SIM_MAX_POSITION_DAYS", "14"))
+    SIM_STALE_THRESHOLD: float = float(os.getenv("SIM_STALE_THRESHOLD", "0.05"))
+
+    # Crypto noise filter (toggle off for arbitrage)
+    FILTER_CRYPTO_NOISE: bool = os.getenv("FILTER_CRYPTO_NOISE", "true").lower() == "true"
+
+    # Arbitrage (scaffold — disabled by default)
+    ARB_ENABLED: bool = os.getenv("ARB_ENABLED", "false").lower() == "true"
+    ARB_BINANCE_WS_URL: str = os.getenv("ARB_BINANCE_WS_URL", "wss://stream.binance.com:9443/ws/btcusdt@trade")
+    ARB_MIN_EDGE: float = float(os.getenv("ARB_MIN_EDGE", "0.005"))
+    ARB_MAX_POSITION_USD: float = float(os.getenv("ARB_MAX_POSITION_USD", "50"))
 
     @property
     def database_url(self) -> str:

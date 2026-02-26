@@ -53,9 +53,9 @@ def _init_trader_state(tid: str, paused_set: set[str]):
 
 def _run_cycle():
     """Run one simulation cycle (blocking). Called from a thread so the web server stays responsive."""
-    from src.analyzer import get_individual_analyzers, EnsembleAnalyzer, _build_web_context
+    from src.analyzer import get_individual_analyzers, EnsembleAnalyzer, _build_web_context  # noqa: E402
     from src.scanner import MarketScanner
-    from src.simulator import Simulator
+    from src.simulator import Simulator  # Also used for performance reviews below
 
     cli = PolymarketCLI()
     scanner = MarketScanner(cli)
@@ -139,7 +139,10 @@ def _run_cycle():
                 cached = market_results.get(market.id, [])
                 if not cached:
                     continue
-                analysis = ensemble.aggregate(market, cached)
+                if config.USE_DEBATE_MODE:
+                    analysis = ensemble.debate(market, cached, web_contexts.get(market.id, ""))
+                else:
+                    analysis = ensemble.aggregate(market, cached)
                 all_analyses["ensemble"].append((market, analysis))
                 sim_state["traders"]["ensemble"]["markets_analyzed"] += 1
                 db.save_analysis(
@@ -201,6 +204,18 @@ def _run_cycle():
         except Exception as e:
             logger.warning("Failed to snapshot %s: %s", tid, e)
 
+    # 8. Performance reviews
+    for tid in TRADER_IDS:
+        try:
+            sim = Simulator(cli, tid)
+            review = sim.run_performance_review(cycle_number=cycle_num)
+            if review:
+                logger.info("[%s] Performance: %d/%d correct (%.0f%%), Brier: %.4f",
+                            tid, review["correct"], review["total_resolved"],
+                            review["accuracy"] * 100, review["brier_score"])
+        except Exception as e:
+            logger.warning("Performance review failed for %s: %s", tid, e)
+
     sim_state["cycle_count"] += 1
     sim_state["last_run"] = datetime.now(timezone.utc).isoformat()
     sim_state["last_error"] = None
@@ -247,6 +262,17 @@ async def dashboard(request: Request):
     open_bets = [b for b in all_bets if b.status.value == "OPEN"]
     closed_bets = [b for b in all_bets if b.status.value != "OPEN"]
 
+    # Performance reviews
+    reviews = db.get_latest_performance_reviews()
+
+    # Add position age to open bets for display
+    now = datetime.now(timezone.utc)
+    for bet in open_bets:
+        placed = bet.placed_at
+        if placed.tzinfo is None:
+            placed = placed.replace(tzinfo=timezone.utc)
+        bet._age_days = (now - placed).total_seconds() / 86400
+
     # Aggregate stats
     total_value = sum(p.portfolio_value for p in portfolios)
     total_pnl = sum(p.total_pnl for p in portfolios)
@@ -277,6 +303,8 @@ async def dashboard(request: Request):
         "total_value": total_value,
         "total_pnl": total_pnl,
         "trader_details": trader_details,
+        "reviews": reviews,
+        "max_position_days": config.SIM_MAX_POSITION_DAYS,
         "config": {
             "starting_balance": config.SIM_STARTING_BALANCE,
             "max_bet_pct": config.SIM_MAX_BET_PCT,

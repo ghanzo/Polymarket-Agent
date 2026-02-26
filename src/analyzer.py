@@ -33,6 +33,8 @@ ANALYSIS_PROMPT = """You are an expert prediction market trader. Your job is to 
 {price_history_section}
 {momentum_section}
 {order_book_section}
+{related_markets_section}
+{market_maturity_section}
 {web_context_section}
 {category_instructions}
 
@@ -63,6 +65,8 @@ COT_STEP1_PROMPT = """You are an expert prediction market analyst.
 {price_history_section}
 {momentum_section}
 {order_book_section}
+{related_markets_section}
+{market_maturity_section}
 {web_context_section}
 {category_instructions}
 
@@ -85,6 +89,8 @@ COT_STEP2_PROMPT = """You are an expert prediction market analyst.
 {price_history_section}
 {momentum_section}
 {order_book_section}
+{related_markets_section}
+{market_maturity_section}
 {web_context_section}
 {category_instructions}
 
@@ -110,6 +116,8 @@ COT_STEP3_PROMPT = """You are an expert prediction market trader. Your job is to
 - **Time remaining**: {time_remaining}
 {momentum_section}
 {order_book_section}
+{related_markets_section}
+{market_maturity_section}
 {web_context_section}
 {category_instructions}
 
@@ -128,6 +136,62 @@ Weigh both arguments carefully. Consider:
 
 Respond with ONLY valid JSON:
 {{"recommendation": "BUY_YES" or "BUY_NO" or "SKIP", "confidence": 0.0 to 1.0, "estimated_probability": 0.0 to 1.0, "reasoning": "your synthesis in 2-3 sentences"}}"""
+
+# ---------------------------------------------------------------------------
+# Debate Prompts
+# ---------------------------------------------------------------------------
+
+DEBATE_REBUTTAL_PROMPT = """You are an expert prediction market analyst engaged in a structured debate.
+
+## Market
+- **Question**: {question}
+- **Current YES price**: {midpoint} (market's implied probability: {implied_pct}%)
+- **Volume**: ${volume} | **Liquidity**: ${liquidity}
+- **Time remaining**: {time_remaining}
+{web_context_section}
+
+## Your Original Analysis ({own_model})
+- Recommendation: {own_recommendation}
+- Estimated probability: {own_probability:.1%}
+- Confidence: {own_confidence:.0%}
+- Reasoning: {own_reasoning}
+
+## Other Models' Analyses
+{other_analyses}
+
+## Task: Rebuttal Round
+1. Identify the STRONGEST opposing argument from other models.
+2. Identify BLIND SPOTS in opponents' reasoning — what are they missing?
+3. Consider whether any opposing argument should change your position.
+4. Either UPDATE your position with justification or HOLD with strengthened reasoning.
+
+Respond with ONLY valid JSON:
+{{"updated_recommendation": "BUY_YES" or "BUY_NO" or "SKIP", "updated_probability": 0.0 to 1.0, "updated_confidence": 0.0 to 1.0, "rebuttal_reasoning": "your rebuttal and updated analysis"}}"""
+
+DEBATE_SYNTHESIS_PROMPT = """You are a master synthesizer resolving a multi-model prediction market debate.
+
+## Market
+- **Question**: {question}
+- **Current YES price**: {midpoint} (market's implied probability: {implied_pct}%)
+- **Volume**: ${volume} | **Liquidity**: ${liquidity}
+- **Time remaining**: {time_remaining}
+{web_context_section}
+
+## Round 1: Independent Analyses
+{round1_analyses}
+
+## Round 2: Rebuttals
+{round2_rebuttals}
+
+## Task: Final Synthesis
+Weigh all arguments and rebuttals to produce a final decision:
+1. Which arguments SURVIVED the debate strongest?
+2. Did any model change position for a GOOD reason (new info vs capitulation)?
+3. Where did models CONVERGE (strong signal) vs DIVERGE (genuine uncertainty)?
+4. What is the calibrated final probability accounting for all perspectives?
+
+Respond with ONLY valid JSON:
+{{"recommendation": "BUY_YES" or "BUY_NO" or "SKIP", "confidence": 0.0 to 1.0, "estimated_probability": 0.0 to 1.0, "reasoning": "synthesis of debate in 2-3 sentences"}}"""
 
 # ---------------------------------------------------------------------------
 # Market Classification
@@ -270,10 +334,25 @@ def _build_search_query(market: Market) -> str:
 
 
 def _build_web_context(market: Market) -> str:
-    """Search the web for context relevant to a market question."""
+    """Search the web for context relevant to a market question.
+
+    When USE_MULTI_SEARCH is enabled, runs a second category-aware query
+    and deduplicates results by URL.
+    """
     if not config.BRAVE_API_KEY:
         return ""
     results = web_search(_build_search_query(market), num_results=5)
+
+    # Optional second query for broader context
+    if config.USE_MULTI_SEARCH:
+        alt_query = _build_alt_search_query(market)
+        alt_results = web_search(alt_query, num_results=5)
+        seen_urls = {r["url"] for r in results}
+        for r in alt_results:
+            if r["url"] not in seen_urls:
+                results.append(r)
+                seen_urls.add(r["url"])
+
     if not results:
         return ""
     lines = ["- **Recent news context** (from web search):"]
@@ -351,6 +430,109 @@ def _format_momentum(price_history: list[dict] | None) -> str:
     return f"- **Price momentum**: {momentum:+.1%} over recent history ({direction})"
 
 
+def _format_related_markets(market: Market) -> str:
+    """Format sibling markets in the same event with prices and volume."""
+    if not market.related_markets:
+        return ""
+    lines = ["- **Related markets in this event**:"]
+    if market.event_title:
+        lines[0] = f"- **Related markets** (event: {market.event_title}):"
+    for rm in market.related_markets:
+        mid = rm.get("midpoint")
+        mid_str = f"YES {float(mid):.0%}" if mid else "?"
+        vol = rm.get("volume", "0")
+        lines.append(f"  - [{mid_str}] {rm.get('question', '?')} (vol: ${vol})")
+    return "\n".join(lines)
+
+
+def _format_market_maturity(market: Market) -> str:
+    """Compute market age and average daily volume."""
+    if not market.created_at:
+        return ""
+    try:
+        created = datetime.fromisoformat(market.created_at.replace("Z", "+00:00"))
+        age_days = (datetime.now(timezone.utc) - created).total_seconds() / 86400
+        if age_days < 1:
+            label = "NEW"
+        elif age_days < 7:
+            label = "YOUNG"
+        elif age_days < 30:
+            label = "ESTABLISHED"
+        else:
+            label = "MATURE"
+        try:
+            vol = float(market.volume)
+            avg_daily = vol / max(age_days, 1)
+            return f"- **Market maturity**: {label} ({age_days:.0f} days old, avg ${avg_daily:,.0f}/day)"
+        except (ValueError, TypeError):
+            return f"- **Market maturity**: {label} ({age_days:.0f} days old)"
+    except (ValueError, TypeError):
+        return ""
+
+
+def _build_alt_search_query(market: Market) -> str:
+    """Build a category-aware alternative search query."""
+    category = classify_market(market.question)
+    q = market.question.strip()
+    year = str(datetime.now(timezone.utc).year)
+
+    if category == "politics":
+        return f"{q} polls forecast prediction {year}"
+    elif category == "crypto":
+        return f"{q} price analysis outlook {year}"
+    elif category == "sports":
+        return f"{q} odds prediction betting {year}"
+    elif category == "finance":
+        return f"{q} forecast economic outlook {year}"
+    elif category == "science_tech":
+        return f"{q} latest news update {year}"
+    else:
+        return f"{q} analysis prediction {year}"
+
+
+def _format_analyses_for_debate(analyses: list[Analysis], exclude_model: str = "") -> str:
+    """Format other models' analyses for the rebuttal prompt."""
+    lines = []
+    for a in analyses:
+        if a.model == exclude_model:
+            continue
+        lines.append(f"### {a.model}")
+        lines.append(f"- Recommendation: {a.recommendation.value}")
+        lines.append(f"- Estimated probability: {a.estimated_probability:.1%}")
+        lines.append(f"- Confidence: {a.confidence:.0%}")
+        lines.append(f"- Reasoning: {a.reasoning}")
+        lines.append("")
+    return "\n".join(lines) if lines else "No other analyses available."
+
+
+def _format_rebuttals_for_synthesis(
+    round1: list[Analysis],
+    round2: list[dict],
+) -> tuple[str, str]:
+    """Format Round 1 analyses and Round 2 rebuttals for synthesis prompt.
+
+    Returns (round1_text, round2_text).
+    """
+    r1_lines = []
+    for a in round1:
+        r1_lines.append(f"### {a.model}")
+        r1_lines.append(f"- Recommendation: {a.recommendation.value}")
+        r1_lines.append(f"- Probability: {a.estimated_probability:.1%} (confidence: {a.confidence:.0%})")
+        r1_lines.append(f"- Reasoning: {a.reasoning}")
+        r1_lines.append("")
+
+    r2_lines = []
+    for reb in round2:
+        r2_lines.append(f"### {reb.get('model', 'unknown')}")
+        r2_lines.append(f"- Updated recommendation: {reb.get('updated_recommendation', '?')}")
+        r2_lines.append(f"- Updated probability: {reb.get('updated_probability', '?')}")
+        r2_lines.append(f"- Updated confidence: {reb.get('updated_confidence', '?')}")
+        r2_lines.append(f"- Rebuttal: {reb.get('rebuttal_reasoning', 'none')}")
+        r2_lines.append("")
+
+    return "\n".join(r1_lines), "\n".join(r2_lines)
+
+
 def _extract_resolution_info(description: str) -> str:
     """Extract resolution criteria from a market description.
 
@@ -415,25 +597,25 @@ class Analyzer(ABC):
             "- Account for the possibility that you are missing information the market has."
         )
         # Optionally inject calibration data from DB
+        # cal is list[dict] with keys: bucket_min, bucket_max, predicted_center, actual_rate, sample_count
         if config.USE_CALIBRATION:
             try:
                 from src import db
                 trader_id = getattr(self, "TRADER_ID", None)
                 if trader_id:
                     cal = db.get_calibration(trader_id)
-                    if cal and cal.get("total_bets", 0) >= config.MIN_CALIBRATION_SAMPLES:
-                        cal_lines = ["\n\nYour recent calibration data:"]
-                        for bucket, stats in sorted(cal.get("buckets", {}).items()):
-                            predicted = stats.get("avg_predicted", 0)
-                            actual = stats.get("actual_rate", 0)
-                            n = stats.get("count", 0)
-                            if n > 0:
-                                cal_lines.append(
-                                    f"- When you predict {bucket}: actual outcome rate is "
-                                    f"{actual:.0%} (n={n})"
-                                )
-                        if len(cal_lines) > 1:
-                            base += "\n".join(cal_lines)
+                    if cal:
+                        total_samples = sum(b["sample_count"] for b in cal)
+                        if total_samples >= config.MIN_CALIBRATION_SAMPLES:
+                            cal_lines = ["\n\nYour recent calibration data (predicted vs actual outcomes):"]
+                            for bucket in cal:
+                                if bucket["sample_count"] > 0:
+                                    cal_lines.append(
+                                        f"- When you predict {bucket['bucket_min']:.0%}-{bucket['bucket_max']:.0%}: "
+                                        f"actual rate is {bucket['actual_rate']:.0%} (n={bucket['sample_count']})"
+                                    )
+                            if len(cal_lines) > 1:
+                                base += "\n".join(cal_lines)
             except Exception:
                 pass  # Calibration data is optional
         return base
@@ -504,6 +686,8 @@ class Analyzer(ABC):
             "price_history_section": _format_price_history(market.price_history),
             "momentum_section": _format_momentum(market.price_history),
             "order_book_section": _format_order_book(market.order_book),
+            "related_markets_section": _format_related_markets(market),
+            "market_maturity_section": _format_market_maturity(market),
             "web_context_section": web_context,
             "category_instructions": CATEGORY_INSTRUCTIONS.get(category, ""),
         }
@@ -526,6 +710,8 @@ class Analyzer(ABC):
             price_history_section=history_section,
             momentum_section=_format_momentum(market.price_history),
             order_book_section=_format_order_book(market.order_book),
+            related_markets_section=_format_related_markets(market),
+            market_maturity_section=_format_market_maturity(market),
             web_context_section=web_context,
             category_instructions=CATEGORY_INSTRUCTIONS.get(category, ""),
         )
@@ -558,6 +744,54 @@ class Analyzer(ABC):
             estimated_probability=est_prob,
             reasoning=reasoning,
         )
+
+    def rebuttal(
+        self,
+        market: Market,
+        own_analysis: Analysis,
+        other_analyses: list[Analysis],
+        web_context: str = "",
+    ) -> dict:
+        """Round 2: See others' work, write rebuttal. Returns dict with updated fields."""
+        midpoint = market.midpoint or 0.5
+        prompt = DEBATE_REBUTTAL_PROMPT.format(
+            question=market.question,
+            midpoint=f"{midpoint:.3f}",
+            implied_pct=f"{midpoint * 100:.1f}",
+            volume=market.volume,
+            liquidity=market.liquidity,
+            time_remaining=_format_time_remaining(market.end_date),
+            web_context_section=web_context,
+            own_model=own_analysis.model,
+            own_recommendation=own_analysis.recommendation.value,
+            own_probability=own_analysis.estimated_probability,
+            own_confidence=own_analysis.confidence,
+            own_reasoning=own_analysis.reasoning,
+            other_analyses=_format_analyses_for_debate(other_analyses, exclude_model=own_analysis.model),
+        )
+        text = self._call_model_with_retry(prompt)
+
+        # Parse JSON rebuttal
+        cleaned = text.strip()
+        start = cleaned.find("{")
+        end = cleaned.rfind("}") + 1
+        if start == -1 or end <= start:
+            # Fallback: keep original position
+            return {
+                "model": self._model_id(),
+                "updated_recommendation": own_analysis.recommendation.value,
+                "updated_probability": own_analysis.estimated_probability,
+                "updated_confidence": own_analysis.confidence,
+                "rebuttal_reasoning": f"Failed to parse rebuttal: {cleaned[:100]}",
+            }
+        data = json.loads(cleaned[start:end])
+        return {
+            "model": self._model_id(),
+            "updated_recommendation": data.get("updated_recommendation", own_analysis.recommendation.value),
+            "updated_probability": max(0.0, min(1.0, float(data.get("updated_probability", own_analysis.estimated_probability)))),
+            "updated_confidence": max(0.0, min(1.0, float(data.get("updated_confidence", own_analysis.confidence)))),
+            "rebuttal_reasoning": data.get("rebuttal_reasoning", "No rebuttal provided"),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -724,6 +958,95 @@ class EnsembleAnalyzer(Analyzer):
             confidence=0.0, estimated_probability=avg_prob,
             reasoning=f"Models disagree: {combined}",
         )
+
+    def debate(self, market: Market, round1_results: list[Analysis], web_context: str = "") -> Analysis:
+        """Full debate: Round 1 results -> Round 2 rebuttals -> Round 3 synthesis."""
+        if not round1_results:
+            return Analysis(
+                market_id=market.id, model="ensemble:debate",
+                recommendation=Recommendation.SKIP,
+                confidence=0.0, estimated_probability=0.5,
+                reasoning="No Round 1 results to debate.",
+            )
+
+        # Build model->analyzer lookup for rebuttal calls
+        analyzer_map: dict[str, Analyzer] = {}
+        for analyzer in self.analyzers:
+            analyzer_map[analyzer._model_id()] = analyzer
+
+        # Round 2: Each model sees others' analyses, writes rebuttal
+        round2_rebuttals: list[dict] = []
+        for analysis in round1_results:
+            analyzer = analyzer_map.get(analysis.model)
+            if not analyzer:
+                logger.warning("No analyzer found for model %s, skipping rebuttal", analysis.model)
+                continue
+            others = [a for a in round1_results if a.model != analysis.model]
+            if not others:
+                # Only one model, no debate possible
+                continue
+            try:
+                rebuttal = analyzer.rebuttal(market, analysis, others, web_context)
+                round2_rebuttals.append(rebuttal)
+                logger.info("[debate] %s rebuttal: %s -> %s",
+                            analysis.model,
+                            analysis.recommendation.value,
+                            rebuttal.get("updated_recommendation", "?"))
+            except Exception as e:
+                logger.warning("[debate] Rebuttal failed for %s: %s", analysis.model, e)
+
+        # If no rebuttals succeeded, fall back to simple aggregation
+        if not round2_rebuttals:
+            logger.info("[debate] No rebuttals succeeded, falling back to aggregate")
+            return self._aggregate_results(market, round1_results)
+
+        # Round 3: Synthesis — pick synthesizer model
+        synthesizer = self._pick_synthesizer(analyzer_map)
+        if not synthesizer:
+            logger.warning("[debate] No synthesizer available, falling back to aggregate")
+            return self._aggregate_results(market, round1_results)
+
+        round1_text, round2_text = _format_rebuttals_for_synthesis(round1_results, round2_rebuttals)
+        midpoint = market.midpoint or 0.5
+        synthesis_prompt = DEBATE_SYNTHESIS_PROMPT.format(
+            question=market.question,
+            midpoint=f"{midpoint:.3f}",
+            implied_pct=f"{midpoint * 100:.1f}",
+            volume=market.volume,
+            liquidity=market.liquidity,
+            time_remaining=_format_time_remaining(market.end_date),
+            web_context_section=web_context,
+            round1_analyses=round1_text,
+            round2_rebuttals=round2_text,
+        )
+
+        try:
+            text = synthesizer._call_model_with_retry(synthesis_prompt)
+            result = synthesizer._parse_response(text, market.id, "ensemble:debate")
+            # Override model name to indicate debate
+            return Analysis(
+                market_id=result.market_id,
+                model="ensemble:debate",
+                recommendation=result.recommendation,
+                confidence=result.confidence,
+                estimated_probability=result.estimated_probability,
+                reasoning=f"[Debate synthesis] {result.reasoning}",
+            )
+        except Exception as e:
+            logger.warning("[debate] Synthesis failed: %s — falling back to aggregate", e)
+            return self._aggregate_results(market, round1_results)
+
+    def _pick_synthesizer(self, analyzer_map: dict[str, "Analyzer"]) -> "Analyzer | None":
+        """Pick the synthesizer model, preferring the configured one."""
+        preferred = config.DEBATE_SYNTHESIZER.lower()
+        # Try to find by trader ID prefix (e.g. "grok" matches "grok:grok-4-1-fast-reasoning")
+        for model_id, analyzer in analyzer_map.items():
+            if model_id.startswith(preferred):
+                return analyzer
+        # Fall back to first available
+        if analyzer_map:
+            return next(iter(analyzer_map.values()))
+        return None
 
 
 # ---------------------------------------------------------------------------

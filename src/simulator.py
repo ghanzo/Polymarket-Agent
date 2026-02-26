@@ -18,10 +18,18 @@ class Simulator:
         """Place a simulated bet using Kelly criterion sizing."""
         if analysis.recommendation == Recommendation.SKIP:
             return None
-        if analysis.confidence < config.SIM_MIN_CONFIDENCE:
+        # Ensemble gets a lower confidence bar when multiple models agree
+        min_conf = config.SIM_ENSEMBLE_MIN_CONFIDENCE if self.trader_id == "ensemble" else config.SIM_MIN_CONFIDENCE
+        if analysis.confidence < min_conf:
             return None
         if db.has_open_bet_on_market(market.id, self.trader_id):
             return None
+
+        # Event concentration limit
+        if market.event_id and config.SIM_MAX_BETS_PER_EVENT > 0:
+            open_in_event = db.count_open_bets_by_event(market.event_id, self.trader_id)
+            if open_in_event >= config.SIM_MAX_BETS_PER_EVENT:
+                return None
 
         portfolio = db.get_portfolio(self.trader_id)
         midpoint = market.midpoint or 0.5
@@ -80,6 +88,7 @@ class Simulator:
             entry_price=entry_price,
             shares=shares,
             token_id=token_id,
+            event_id=market.event_id,
         )
 
         bet.id = db.save_bet(bet)
@@ -100,15 +109,44 @@ class Simulator:
                         current_value = price
                     bet.current_price = current_value
                     db.update_bet_price(bet.id, current_value)
-                    # Check stop-loss / take-profit
+
+                    # Track peak price for trailing stop
+                    if bet.peak_price is None or current_value > bet.peak_price:
+                        bet.peak_price = current_value
+                        db.update_bet_peak_price(bet.id, current_value)
+
+                    # Compute dynamic stop level based on peak
                     if bet.entry_price > 0:
+                        peak_gain_pct = (bet.peak_price - bet.entry_price) / bet.entry_price
                         pnl_pct = (current_value - bet.entry_price) / bet.entry_price
-                        if pnl_pct <= -config.SIM_STOP_LOSS:
+
+                        if peak_gain_pct >= config.SIM_TRAILING_PROFIT_TRIGGER:
+                            # Position reached +35% at some point — lock 15% profit
+                            stop_level = bet.entry_price * (1 + config.SIM_TRAILING_PROFIT_LOCK)
+                        elif peak_gain_pct >= config.SIM_TRAILING_BREAKEVEN_TRIGGER:
+                            # Position reached +20% at some point — stop at breakeven
+                            stop_level = bet.entry_price
+                        else:
+                            # Normal stop-loss
+                            stop_level = bet.entry_price * (1 - config.SIM_STOP_LOSS)
+
+                        # Check exits
+                        if current_value <= stop_level:
                             db.close_bet(bet.id, current_value)
                             continue
                         if pnl_pct >= config.SIM_TAKE_PROFIT:
                             db.close_bet(bet.id, current_value)
                             continue
+
+                    # Stale position detection
+                    if config.SIM_MAX_POSITION_DAYS > 0:
+                        placed = bet.placed_at if bet.placed_at.tzinfo else bet.placed_at.replace(tzinfo=timezone.utc)
+                        age_days = (datetime.now(timezone.utc) - placed).total_seconds() / 86400
+                        if age_days >= config.SIM_MAX_POSITION_DAYS:
+                            movement = abs(current_value - bet.entry_price) / bet.entry_price
+                            if movement < config.SIM_STALE_THRESHOLD:
+                                db.close_bet(bet.id, current_value)
+                                continue
             except (CLIError, ValueError, TypeError):
                 pass
         return open_bets
@@ -147,6 +185,68 @@ class Simulator:
             self._update_live_calibration()
 
         return resolved
+
+    def run_performance_review(self, cycle_number: int | None = None) -> dict | None:
+        """Evaluate all resolved bets against predictions. Zero API cost."""
+        resolved = db.get_resolved_bets(self.trader_id)
+        if not resolved:
+            return None
+
+        correct = 0
+        brier_sum = 0.0
+        brier_n = 0
+        total_pnl = 0.0
+        confidences = []
+
+        for bet in resolved:
+            analysis = db.get_analysis_for_bet(self.trader_id, bet.market_id)
+            if not analysis:
+                continue
+
+            est_prob = analysis["estimated_probability"]
+            yes_won = (bet.status == BetStatus.WON) if bet.side == Side.YES else (bet.status == BetStatus.LOST)
+
+            # Was the directional call correct?
+            if analysis["recommendation"] in ("BUY_YES", "BUY_NO"):
+                predicted_yes = analysis["recommendation"] == "BUY_YES"
+                if predicted_yes == yes_won:
+                    correct += 1
+
+            # Brier score
+            actual = 1.0 if yes_won else 0.0
+            brier_sum += (est_prob - actual) ** 2
+            brier_n += 1
+            total_pnl += bet.pnl
+            confidences.append(analysis["confidence"])
+
+        if brier_n == 0:
+            return None
+
+        review = {
+            "trader_id": self.trader_id,
+            "total_resolved": len(resolved),
+            "correct": correct,
+            "accuracy": correct / brier_n if brier_n > 0 else 0.0,
+            "brier_score": brier_sum / brier_n,
+            "total_pnl": total_pnl,
+            "avg_confidence": sum(confidences) / len(confidences) if confidences else 0.0,
+        }
+
+        db.save_performance_review(
+            trader_id=self.trader_id,
+            total_resolved=review["total_resolved"],
+            correct=review["correct"],
+            accuracy=review["accuracy"],
+            brier_score=review["brier_score"],
+            total_pnl=review["total_pnl"],
+            avg_confidence=review["avg_confidence"],
+            cycle_number=cycle_number,
+        )
+
+        # Also update calibration buckets
+        self._update_live_calibration()
+
+        return review
 
     def _update_live_calibration(self):
         """Recompute calibration buckets from resolved bets + analysis_log."""

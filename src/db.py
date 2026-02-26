@@ -104,6 +104,10 @@ def init_db():
                     created_at TIMESTAMP NOT NULL DEFAULT NOW()
                 );
             """)
+            # Schema migrations (idempotent)
+            cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS event_id TEXT;")
+            cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS peak_price DOUBLE PRECISION;")
+
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS search_cache (
                     query_hash TEXT PRIMARY KEY,
@@ -130,6 +134,20 @@ def init_db():
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_snapshots_trader_time
                     ON portfolio_snapshots (trader_id, created_at);
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS performance_reviews (
+                    id SERIAL PRIMARY KEY,
+                    trader_id TEXT NOT NULL,
+                    total_resolved INTEGER NOT NULL,
+                    correct INTEGER NOT NULL,
+                    accuracy DOUBLE PRECISION NOT NULL,
+                    brier_score DOUBLE PRECISION,
+                    total_pnl DOUBLE PRECISION NOT NULL,
+                    avg_confidence DOUBLE PRECISION,
+                    cycle_number INTEGER,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                );
             """)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS calibration (
@@ -206,13 +224,13 @@ def save_bet(bet: Bet) -> int:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO bets (trader_id, market_id, market_question, side, amount, entry_price,
-                                  shares, token_id, status, placed_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                  shares, token_id, status, placed_at, event_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
                 bet.trader_id, bet.market_id, bet.market_question, bet.side.value,
                 bet.amount, bet.entry_price, bet.shares, bet.token_id,
-                bet.status.value, bet.placed_at,
+                bet.status.value, bet.placed_at, bet.event_id,
             ))
             bet_id = cur.fetchone()[0]
             cur.execute(
@@ -527,6 +545,72 @@ def get_portfolio_history(trader_id: str | None = None, hours: int = 72) -> list
             return [dict(r) for r in cur.fetchall()]
 
 
+def count_open_bets_by_event(event_id: str | None, trader_id: str) -> int:
+    """Return count of OPEN bets with matching event_id for a trader."""
+    if not event_id:
+        return 0
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM bets WHERE event_id = %s AND trader_id = %s AND status = 'OPEN'",
+                (event_id, trader_id),
+            )
+            return cur.fetchone()[0]
+
+
+def update_bet_peak_price(bet_id: int, peak_price: float):
+    """Update peak_price column for a bet."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE bets SET peak_price = %s WHERE id = %s",
+                (peak_price, bet_id),
+            )
+        conn.commit()
+
+
+def save_performance_review(trader_id: str, total_resolved: int, correct: int,
+                            accuracy: float, brier_score: float | None,
+                            total_pnl: float, avg_confidence: float | None,
+                            cycle_number: int | None = None):
+    """Save one performance review row per trader per cycle."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO performance_reviews
+                    (trader_id, total_resolved, correct, accuracy, brier_score,
+                     total_pnl, avg_confidence, cycle_number)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (trader_id, total_resolved, correct, accuracy, brier_score,
+                  total_pnl, avg_confidence, cycle_number))
+        conn.commit()
+
+
+def get_latest_performance_reviews() -> list[dict]:
+    """Return the most recent review per trader."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT DISTINCT ON (trader_id) *
+                FROM performance_reviews
+                ORDER BY trader_id, created_at DESC
+            """)
+            return [dict(r) for r in cur.fetchall()]
+
+
+def get_performance_history(trader_id: str, limit: int = 50) -> list[dict]:
+    """Return review rows over time for trend display."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT * FROM performance_reviews
+                WHERE trader_id = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+            """, (trader_id, limit))
+            return [dict(r) for r in cur.fetchall()]
+
+
 def _row_to_bet(row: dict) -> Bet:
     return Bet(
         id=row["id"],
@@ -544,4 +628,6 @@ def _row_to_bet(row: dict) -> Bet:
         pnl=row["pnl"],
         placed_at=row["placed_at"],
         resolved_at=row.get("resolved_at"),
+        event_id=row.get("event_id"),
+        peak_price=row.get("peak_price"),
     )
