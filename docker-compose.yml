@@ -10,6 +10,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: unless-stopped
 
   dashboard:
     build: .
@@ -26,6 +27,11 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/status')"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
 
   postgres:
     image: postgres:16-alpine
@@ -37,8 +43,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-polymarket}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-polymarket}"]
       interval: 5s
@@ -50,8 +54,6 @@ services:
     container_name: polymarket-redis
     volumes:
       - redisdata:/data
-    ports:
-      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

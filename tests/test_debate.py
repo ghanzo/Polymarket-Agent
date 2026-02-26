@@ -183,7 +183,11 @@ class TestRebuttal:
 
 class TestDebate:
     def test_debate_full_flow(self):
-        """Test complete debate: Round 1 -> Round 2 rebuttals -> Round 3 synthesis."""
+        """Test complete debate: Round 1 -> Round 2 rebuttals -> Round 3 synthesis.
+
+        Models must disagree to trigger the full debate path (unanimous agreement
+        takes the early-exit optimization).
+        """
         rebuttal_resp = json.dumps({
             "updated_recommendation": "BUY_YES",
             "updated_probability": 0.72,
@@ -202,9 +206,10 @@ class TestDebate:
 
         ensemble = EnsembleAnalyzer([a1, a2])
 
+        # Models disagree (YES vs NO) to ensure full debate path runs
         round1 = [
             _make_analysis("m1", "claude:test", Recommendation.BUY_YES, 0.8, 0.7),
-            _make_analysis("m1", "grok:test", Recommendation.BUY_YES, 0.7, 0.65),
+            _make_analysis("m1", "grok:test", Recommendation.BUY_NO, 0.7, 0.35),
         ]
 
         result = ensemble.debate(MARKET, round1)

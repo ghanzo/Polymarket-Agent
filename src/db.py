@@ -26,6 +26,10 @@ def get_conn():
     pool = _get_pool()
     conn = pool.getconn()
     try:
+        # Reset stale connections (e.g. after Postgres restart)
+        if conn.closed:
+            pool.putconn(conn)
+            conn = pool.getconn()
         yield conn
     finally:
         pool.putconn(conn)

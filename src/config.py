@@ -43,7 +43,6 @@ class Config:
     # Context enrichment & debate
     USE_EVENT_CONTEXT: bool = os.getenv("USE_EVENT_CONTEXT", "true").lower() == "true"
     USE_MULTI_SEARCH: bool = os.getenv("USE_MULTI_SEARCH", "false").lower() == "true"
-    WEB_SEARCH_QUERIES: int = int(os.getenv("WEB_SEARCH_QUERIES", "2"))
     USE_DEBATE_MODE: bool = os.getenv("USE_DEBATE_MODE", "false").lower() == "true"
     DEBATE_SYNTHESIZER: str = os.getenv("DEBATE_SYNTHESIZER", "grok")
 
@@ -74,6 +73,10 @@ class Config:
     SIM_MIXED_POPULAR_SLOTS: int = int(os.getenv("SIM_MIXED_POPULAR_SLOTS", "20"))
     SIM_MIXED_NICHE_SLOTS: int = int(os.getenv("SIM_MIXED_NICHE_SLOTS", "10"))
 
+    # Cycle timing
+    SIM_INTERVAL_SECONDS: int = int(os.getenv("SIM_INTERVAL_SECONDS", "300"))
+    SIM_CYCLE_TIMEOUT: int = int(os.getenv("SIM_CYCLE_TIMEOUT", "600"))  # Max seconds per cycle
+
     # Stale position management
     SIM_MAX_POSITION_DAYS: int = int(os.getenv("SIM_MAX_POSITION_DAYS", "14"))
     SIM_STALE_THRESHOLD: float = float(os.getenv("SIM_STALE_THRESHOLD", "0.05"))
@@ -86,6 +89,8 @@ class Config:
     ARB_BINANCE_WS_URL: str = os.getenv("ARB_BINANCE_WS_URL", "wss://stream.binance.com:9443/ws/btcusdt@trade")
     ARB_MIN_EDGE: float = float(os.getenv("ARB_MIN_EDGE", "0.005"))
     ARB_MAX_POSITION_USD: float = float(os.getenv("ARB_MAX_POSITION_USD", "50"))
+
+    _runtime_overrides_loaded: bool = False
 
     def load_runtime_overrides(self):
         """Load runtime config overrides from DB. Called at cycle start."""
@@ -106,8 +111,12 @@ class Config:
             for key, cast in type_map.items():
                 if key in overrides:
                     setattr(self, key, cast(overrides[key]))
+            self._runtime_overrides_loaded = True
         except Exception:
-            pass  # DB not available yet at startup
+            if self._runtime_overrides_loaded:
+                # DB was working before — log the failure
+                import logging
+                logging.getLogger("config").warning("Failed to load runtime overrides from DB")
 
     @property
     def database_url(self) -> str:

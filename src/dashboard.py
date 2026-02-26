@@ -35,7 +35,6 @@ sim_state = {
     "traders": {},
 }
 
-SIM_INTERVAL_SECONDS = 300  # 5 minutes
 _sim_lock = threading.Lock()  # Guards sim_state mutations from _run_cycle thread
 
 
@@ -109,7 +108,7 @@ def _run_cycle():
                 )
             except Exception as e:
                 sim_state["traders"][tid]["errors"] += 1
-                logger.warning("[%s] Error on %s: %s", tid, market.question[:40], e)
+                logger.warning("[%s] Error on %s: %s", tid, market.question[:40], e, exc_info=True)
         sim_state["traders"][tid]["status"] = "idle"
         sim_state["traders"][tid]["current_market"] = ""
         sim_state["traders"][tid]["last_action"] = datetime.now(timezone.utc).isoformat()
@@ -237,7 +236,16 @@ async def simulation_loop():
         with _sim_lock:
             sim_state["status"] = "running"
         try:
-            await asyncio.to_thread(_run_cycle)
+            # Watchdog: cancel cycle if it exceeds timeout
+            timeout = config.SIM_CYCLE_TIMEOUT
+            await asyncio.wait_for(asyncio.to_thread(_run_cycle), timeout=timeout)
+        except asyncio.TimeoutError:
+            with _sim_lock:
+                sim_state["last_error"] = f"Cycle timed out after {timeout}s"
+                for tid_state in sim_state["traders"].values():
+                    if tid_state.get("status") not in ("paused", "idle"):
+                        tid_state["status"] = "error"
+            logger.error("Cycle timed out after %ds — forcing completion", timeout)
         except Exception as e:
             with _sim_lock:
                 sim_state["last_error"] = str(e)
@@ -248,7 +256,7 @@ async def simulation_loop():
 
         with _sim_lock:
             sim_state["status"] = "waiting"
-        await asyncio.sleep(SIM_INTERVAL_SECONDS)
+        await asyncio.sleep(config.SIM_INTERVAL_SECONDS)
 
 
 @asynccontextmanager
@@ -257,6 +265,10 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(simulation_loop())
     yield
     task.cancel()
+    # Clean up DB connection pool
+    if db._pool and not db._pool.closed:
+        db._pool.closeall()
+        logger.info("DB connection pool closed")
 
 
 app = FastAPI(title="Polymarket Paper Trading", lifespan=lifespan)

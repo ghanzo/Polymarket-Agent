@@ -7,9 +7,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN git clone --depth 1 https://github.com/Polymarket/polymarket-cli.git /build
+# Pin to v0.1.4 to avoid upstream breakage
+RUN git clone --depth 1 --branch v0.1.4 https://github.com/Polymarket/polymarket-cli.git /build
 WORKDIR /build
-RUN cargo install --path . --root /usr/local
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/target \
+    cargo install --path . --root /usr/local
 
 # Stage 2: Python runtime with CLI binary
 FROM python:3.12-slim

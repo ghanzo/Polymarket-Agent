@@ -586,9 +586,18 @@ class Analyzer(ABC):
 
     MAX_RETRIES = 2
     RETRY_DELAYS = [15, 45]  # seconds — generous backoff for rate limits
+    _cached_system_prompt: str | None = None
 
     def _system_prompt(self) -> str:
-        """Return a system-level instruction for calibrated prediction analysis."""
+        """Return system prompt, cached per instance to avoid repeated DB queries."""
+        if self._cached_system_prompt is not None:
+            return self._cached_system_prompt
+        prompt = self._build_system_prompt()
+        self._cached_system_prompt = prompt
+        return prompt
+
+    def _build_system_prompt(self) -> str:
+        """Build the system-level instruction. Called once, then cached by _system_prompt()."""
         base = (
             "You are a calibrated prediction market analyst. Your probability estimates "
             "must be well-calibrated: when you say 70%, events should happen roughly 70% "
@@ -906,7 +915,7 @@ class EnsembleAnalyzer(Analyzer):
                 result = analyzer.analyze(market, web_context)
                 results.append(result)
             except Exception as e:
-                print(f"  [WARN] {analyzer.__class__.__name__} failed: {e}")
+                logger.warning("%s failed: %s", analyzer.__class__.__name__, e)
 
         return self._aggregate_results(market, results)
 
@@ -974,31 +983,49 @@ class EnsembleAnalyzer(Analyzer):
                 reasoning="No Round 1 results to debate.",
             )
 
+        # Early exit: if all models unanimously agree, skip the expensive debate
+        non_skip = [r for r in round1_results if r.recommendation != Recommendation.SKIP]
+        if non_skip:
+            recs = set(r.recommendation for r in non_skip)
+            if len(recs) == 1:
+                logger.info("[debate] All %d models agree on %s — skipping debate",
+                            len(non_skip), recs.pop().value)
+                return self._aggregate_results(market, round1_results)
+
         # Build model->analyzer lookup for rebuttal calls
         analyzer_map: dict[str, Analyzer] = {}
         for analyzer in self.analyzers:
             analyzer_map[analyzer._model_id()] = analyzer
 
-        # Round 2: Each model sees others' analyses, writes rebuttal
-        round2_rebuttals: list[dict] = []
-        for analysis in round1_results:
+        # Round 2: Each model sees others' analyses, writes rebuttal (in parallel)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _run_rebuttal(analysis):
             analyzer = analyzer_map.get(analysis.model)
             if not analyzer:
                 logger.warning("No analyzer found for model %s, skipping rebuttal", analysis.model)
-                continue
+                return None
             others = [a for a in round1_results if a.model != analysis.model]
             if not others:
-                # Only one model, no debate possible
-                continue
-            try:
-                rebuttal = analyzer.rebuttal(market, analysis, others, web_context)
-                round2_rebuttals.append(rebuttal)
-                logger.info("[debate] %s rebuttal: %s -> %s",
-                            analysis.model,
-                            analysis.recommendation.value,
-                            rebuttal.get("updated_recommendation", "?"))
-            except Exception as e:
-                logger.warning("[debate] Rebuttal failed for %s: %s", analysis.model, e)
+                return None
+            rebuttal = analyzer.rebuttal(market, analysis, others, web_context)
+            logger.info("[debate] %s rebuttal: %s -> %s",
+                        analysis.model,
+                        analysis.recommendation.value,
+                        rebuttal.get("updated_recommendation", "?"))
+            return rebuttal
+
+        round2_rebuttals: list[dict] = []
+        with ThreadPoolExecutor(max_workers=len(round1_results)) as pool:
+            futures = {pool.submit(_run_rebuttal, a): a for a in round1_results}
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                    if result is not None:
+                        round2_rebuttals.append(result)
+                except Exception as e:
+                    analysis = futures[future]
+                    logger.warning("[debate] Rebuttal failed for %s: %s", analysis.model, e)
 
         # If no rebuttals succeeded, fall back to simple aggregation
         if not round2_rebuttals:
@@ -1068,25 +1095,25 @@ def get_individual_analyzers() -> list[Analyzer]:
     if config.ANTHROPIC_API_KEY and "claude" not in paused:
         try:
             analyzers.append(ClaudeAnalyzer())
-            print("[OK] Claude Opus 4 loaded")
+            logger.info("[OK] Claude Opus 4 loaded")
         except Exception as e:
-            print(f"[WARN] Claude init failed: {e}")
+            logger.warning("Claude init failed: %s", e)
     elif "claude" in paused:
-        print("[PAUSED] Claude — skipping to save costs")
+        logger.info("[PAUSED] Claude — skipping to save costs")
     if config.GEMINI_API_KEY and "gemini" not in paused:
         try:
             analyzers.append(GeminiAnalyzer())
-            print("[OK] Gemini 2.5 Pro loaded")
+            logger.info("[OK] Gemini 2.5 Pro loaded")
         except Exception as e:
-            print(f"[WARN] Gemini init failed: {e}")
+            logger.warning("Gemini init failed: %s", e)
     elif "gemini" in paused:
-        print("[PAUSED] Gemini — skipping to save costs")
+        logger.info("[PAUSED] Gemini — skipping to save costs")
     if config.XAI_API_KEY and "grok" not in paused:
         try:
             analyzers.append(GrokAnalyzer())
-            print("[OK] Grok 4.1 Reasoning loaded")
+            logger.info("[OK] Grok 4.1 Reasoning loaded")
         except Exception as e:
-            print(f"[WARN] Grok init failed: {e}")
+            logger.warning("Grok init failed: %s", e)
     elif "grok" in paused:
-        print("[PAUSED] Grok — skipping to save costs")
+        logger.info("[PAUSED] Grok — skipping to save costs")
     return analyzers
