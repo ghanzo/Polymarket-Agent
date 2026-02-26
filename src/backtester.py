@@ -307,7 +307,7 @@ def run_backtest(
                         side=side,
                         bankroll=bankroll,
                         max_bet_pct=config.SIM_MAX_BET_PCT,
-                        fraction=0.25,
+                        fraction=config.SIM_KELLY_FRACTION,
                         spread=assumed_spread,
                     )
                     if bet_amount >= 1.0:

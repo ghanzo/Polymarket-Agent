@@ -115,8 +115,9 @@ class TestScore:
 
     @freeze_time("2026-01-01T00:00:00+00:00")
     def test_time_horizon_sweet_spot(self, scanner):
+        # Jan 1 → Feb 15 = 45 days → 30-90 day bucket = +1.0
         m = _make_market(volume="0", liquidity="0", end_date="2026-02-15T00:00:00Z", question="test")
-        assert scanner._score(m) == 2.0
+        assert scanner._score(m) == 1.0
 
     @freeze_time("2026-01-01T00:00:00+00:00")
     def test_time_horizon_long(self, scanner):
@@ -140,10 +141,10 @@ class TestScore:
 
     @freeze_time("2026-01-01T00:00:00+00:00")
     def test_max_score(self, scanner):
-        # volume>1M (3) + liquidity>100k (2) + 1-90 days (2) + keyword (0.5) = 7.5
+        # volume>1M (3) + liquidity>100k (2) + 1-7 days (3) + keyword (0.5) = 8.5
         m = _make_market(
             volume="2000000", liquidity="200000",
-            end_date="2026-02-15T00:00:00Z",
+            end_date="2026-01-05T00:00:00Z",
             question="Will the president sign?",
         )
-        assert scanner._score(m) == pytest.approx(7.5)
+        assert scanner._score(m) == pytest.approx(8.5)

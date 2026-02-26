@@ -43,6 +43,10 @@ class Market:
     spread: float | None = None
     price_history: list[dict] | None = None
     order_book: dict | None = None
+    event_id: str | None = None
+    event_title: str | None = None
+    related_markets: list[dict] | None = None
+    created_at: str | None = None
 
     @classmethod
     def from_cli(cls, data: dict) -> Market:
@@ -93,6 +97,8 @@ class Bet:
     pnl: float = 0.0
     placed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     resolved_at: datetime | None = None
+    event_id: str | None = None
+    peak_price: float | None = None
 
     @property
     def unrealized_pnl(self) -> float:
