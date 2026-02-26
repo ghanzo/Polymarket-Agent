@@ -233,15 +233,15 @@ class TestEnsembleAggregate:
         analysis = ensemble.aggregate(self.MARKET, results)
         assert analysis.recommendation == Recommendation.SKIP
 
-    def test_aggregate_confidence_weighted(self):
+    def test_aggregate_equal_weight(self):
         ensemble = self._make_ensemble()
         results = [
             _make_analysis("m1", "a", Recommendation.BUY_YES, 0.8, 0.80),
             _make_analysis("m1", "b", Recommendation.BUY_YES, 0.4, 0.60),
         ]
         analysis = ensemble.aggregate(self.MARKET, results)
-        # (0.80*0.80 + 0.60*0.40) / (0.80+0.40) = 0.88/1.20 ≈ 0.7333
-        assert analysis.estimated_probability == pytest.approx(0.7333, abs=0.01)
+        # Equal-weight average: (0.80 + 0.60) / 2 = 0.70
+        assert analysis.estimated_probability == pytest.approx(0.70, abs=0.01)
 
 
 # ── 5. Spread in Scanner Scoring ──────────────────────────────────────

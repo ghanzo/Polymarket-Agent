@@ -42,7 +42,11 @@ ANALYSIS_PROMPT = """You are an expert prediction market trader. Your job is to 
 1. Based on your knowledge of current events, historical patterns, and base rates, estimate the TRUE probability that the YES outcome occurs.
 2. Compare your estimate to the market price.
 3. If you have an edge, recommend a bet. If not, SKIP.
-4. Your `estimated_probability` MUST be your honest best estimate — this is used for bet sizing.
+
+## Field Definitions
+- **estimated_probability**: Your honest best estimate of the TRUE probability YES occurs [0.0-1.0]. This drives bet sizing — be precise.
+- **confidence**: How confident you are in your edge over the market [0.0-1.0]. High confidence = you believe the market is clearly wrong and you have strong evidence. Low confidence = your edge is uncertain or based on weak signals. This scales position size.
+- **reasoning**: 2-3 sentence summary of your key insight and why the market may be mispriced.
 
 ## Important
 - Be calibrated. If you're unsure, your probability should reflect that uncertainty.
@@ -50,9 +54,11 @@ ANALYSIS_PROMPT = """You are an expert prediction market trader. Your job is to 
 - Think about base rates for similar events.
 - A 1% market doesn't mean free money — most things priced at 1% really are unlikely.
 - Only bet when you have a genuine informational or analytical edge.
+- Beware of recency bias: recent price moves do not equal fundamental change.
+- If your estimate is >85% or <15%, double-check — extreme probabilities are often overconfident.
 
-Respond with ONLY valid JSON:
-{{"recommendation": "BUY_YES" or "BUY_NO" or "SKIP", "confidence": 0.0 to 1.0, "estimated_probability": 0.0 to 1.0, "reasoning": "your analysis"}}"""
+Respond with ONLY a valid JSON object, no text before or after:
+{{"recommendation": "BUY_YES" or "BUY_NO" or "SKIP", "confidence": 0.0 to 1.0, "estimated_probability": 0.0 to 1.0, "reasoning": "2-3 sentence analysis"}}"""
 
 COT_STEP1_PROMPT = """You are an expert prediction market analyst.
 
@@ -931,23 +937,18 @@ class EnsembleAnalyzer(Analyzer):
         majority_rec, majority_count = votes.most_common(1)[0]
 
         if majority_count > len(non_skip) / 2:
-            # Majority agrees — use confidence-weighted probability from voters
+            # Majority agrees — equal-weight probability average from voters
+            # (avoids a confident-but-wrong model dominating the ensemble)
             voters = [r for r in non_skip if r.recommendation == majority_rec]
-            total_conf = sum(r.confidence for r in voters)
-            if total_conf > 0:
-                weighted_prob = sum(
-                    r.estimated_probability * r.confidence for r in voters
-                ) / total_conf
-            else:
-                weighted_prob = sum(r.estimated_probability for r in voters) / len(voters)
+            avg_prob = sum(r.estimated_probability for r in voters) / len(voters)
             avg_confidence = sum(r.confidence for r in voters) / len(voters)
             combined = " | ".join(
-                f"{r.model} ({r.confidence:.0%}): {r.reasoning}" for r in results
+                f"{r.model} ({r.confidence:.0%}): {r.reasoning}" for r in voters
             )
             return Analysis(
                 market_id=market.id, model="ensemble",
                 recommendation=majority_rec,
-                confidence=avg_confidence, estimated_probability=weighted_prob,
+                confidence=avg_confidence, estimated_probability=avg_prob,
                 reasoning=combined,
             )
 

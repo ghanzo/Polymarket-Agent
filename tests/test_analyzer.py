@@ -315,14 +315,14 @@ class TestEnsembleMajority:
         result = ensemble.analyze(self.MARKET)
         assert result.recommendation == Recommendation.SKIP
 
-    def test_confidence_weighted_probability(self):
+    def test_equal_weight_probability(self):
         # Model a: 80% confidence, est_prob=0.80
         # Model b: 40% confidence, est_prob=0.60
-        # Weighted: (0.80*0.80 + 0.60*0.40) / (0.80+0.40) = 0.88/1.20 = 0.7333
+        # Equal-weight average: (0.80 + 0.60) / 2 = 0.70
         analyzers = [
             _FakeAnalyzer(_make_analysis("m1", "a", Recommendation.BUY_YES, 0.8, 0.80)),
             _FakeAnalyzer(_make_analysis("m1", "b", Recommendation.BUY_YES, 0.4, 0.60)),
         ]
         ensemble = EnsembleAnalyzer(analyzers)
         result = ensemble.analyze(self.MARKET)
-        assert result.estimated_probability == pytest.approx(0.7333, abs=0.01)
+        assert result.estimated_probability == pytest.approx(0.70, abs=0.01)

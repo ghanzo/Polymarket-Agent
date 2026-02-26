@@ -119,8 +119,11 @@ class Simulator:
                         pnl_pct = (current_value - bet.entry_price) / bet.entry_price
 
                         if peak_gain_pct >= config.SIM_TRAILING_PROFIT_TRIGGER:
-                            # Position reached +35% at some point — lock 15% profit
-                            stop_level = bet.entry_price * (1 + config.SIM_TRAILING_PROFIT_LOCK)
+                            # True trailing stop: trail below peak price
+                            # Lock minimum profit at TRAILING_PROFIT_LOCK above entry
+                            trailing_stop = bet.peak_price * (1 - config.SIM_TRAILING_PROFIT_LOCK)
+                            min_stop = bet.entry_price * (1 + config.SIM_TRAILING_PROFIT_LOCK)
+                            stop_level = max(trailing_stop, min_stop)
                         elif peak_gain_pct >= config.SIM_TRAILING_BREAKEVEN_TRIGGER:
                             # Position reached +20% at some point — stop at breakeven
                             stop_level = bet.entry_price

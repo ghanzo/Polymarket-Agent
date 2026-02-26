@@ -30,7 +30,8 @@ class TestKellySize:
 
     def test_capped_at_max_bet_pct(self):
         # Huge edge should still be capped at 5% of bankroll
-        result = kelly_size(0.99, 0.01, Side.YES, bankroll=1000, max_bet_pct=0.05)
+        # market_price=0.10 (inside safe range; <=0.05 rejected by extreme price guard)
+        result = kelly_size(0.99, 0.10, Side.YES, bankroll=1000, max_bet_pct=0.05)
         assert result == pytest.approx(50.0, abs=0.01)
 
     def test_market_price_one_yes(self):

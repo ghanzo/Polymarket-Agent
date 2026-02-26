@@ -172,14 +172,18 @@ def kelly_size(
     """
     spread_cost = abs(spread) / 2.0
 
+    # Reject extreme prices where Kelly denominator approaches zero
+    if market_price >= 0.95 or market_price <= 0.05:
+        return 0.0
+
     if side == Side.YES:
         edge = estimated_prob - market_price - spread_cost
-        if edge <= 0 or market_price >= 1.0:
+        if edge <= 0:
             return 0.0
         kelly_f = edge / (1.0 - market_price)
     else:
         edge = (1.0 - estimated_prob) - (1.0 - market_price) - spread_cost
-        if edge <= 0 or market_price <= 0.0:
+        if edge <= 0:
             return 0.0
         kelly_f = edge / market_price
 
