@@ -102,11 +102,9 @@ class Simulator:
                 mid = self.cli.clob_midpoint(bet.token_id)
                 price = float(mid.get("midpoint", 0))
                 if price > 0:
-                    # Convert YES midpoint to the bet's side value
-                    if bet.side == Side.NO:
-                        current_value = 1.0 - price
-                    else:
-                        current_value = price
+                    # bet.token_id is the token we hold (YES or NO).
+                    # clob_midpoint returns that token's price directly.
+                    current_value = price
                     bet.current_price = current_value
                     db.update_bet_price(bet.id, current_value)
 

@@ -277,6 +277,72 @@ class TestScanModes:
         assert niche_score > pop_score
 
 
+# ── NO Token Midpoint Bug Regression ───────────────────────────────
+
+class TestNoTokenPricing:
+    """Regression test: NO bets must use the token midpoint directly,
+    not 1.0 - midpoint (which double-flips the price)."""
+
+    @patch("src.simulator.db")
+    @patch("src.simulator.config")
+    def test_no_bet_uses_midpoint_directly(self, mock_config, mock_db):
+        from src.simulator import Simulator
+
+        mock_config.SIM_MAX_POSITION_DAYS = 0  # disable stale check
+        mock_config.SIM_STOP_LOSS = 0.25
+        mock_config.SIM_TAKE_PROFIT = 0.50
+        mock_config.SIM_TRAILING_BREAKEVEN_TRIGGER = 0.20
+        mock_config.SIM_TRAILING_PROFIT_TRIGGER = 0.35
+        mock_config.SIM_TRAILING_PROFIT_LOCK = 0.15
+
+        # NO bet: entry at 0.05 (low-probability NO token)
+        no_bet = _make_bet(
+            side=Side.NO,
+            entry_price=0.05,
+            peak_price=0.05,
+            status=BetStatus.OPEN,
+        )
+        mock_db.get_open_bets.return_value = [no_bet]
+
+        # clob_midpoint returns 0.04 for the NO token (it dropped slightly)
+        mock_cli = MagicMock()
+        mock_cli.clob_midpoint.return_value = {"midpoint": 0.04}
+
+        sim = Simulator(mock_cli, "grok")
+        sim.update_positions()
+
+        # current_value should be 0.04 (the token's midpoint), NOT 0.96 (1.0 - 0.04)
+        mock_db.update_bet_price.assert_called_once_with(no_bet.id, 0.04)
+
+    @patch("src.simulator.db")
+    @patch("src.simulator.config")
+    def test_yes_bet_uses_midpoint_directly(self, mock_config, mock_db):
+        from src.simulator import Simulator
+
+        mock_config.SIM_MAX_POSITION_DAYS = 0
+        mock_config.SIM_STOP_LOSS = 0.25
+        mock_config.SIM_TAKE_PROFIT = 0.50
+        mock_config.SIM_TRAILING_BREAKEVEN_TRIGGER = 0.20
+        mock_config.SIM_TRAILING_PROFIT_TRIGGER = 0.35
+        mock_config.SIM_TRAILING_PROFIT_LOCK = 0.15
+
+        yes_bet = _make_bet(
+            side=Side.YES,
+            entry_price=0.70,
+            peak_price=0.70,
+            status=BetStatus.OPEN,
+        )
+        mock_db.get_open_bets.return_value = [yes_bet]
+
+        mock_cli = MagicMock()
+        mock_cli.clob_midpoint.return_value = {"midpoint": 0.72}
+
+        sim = Simulator(mock_cli, "grok")
+        sim.update_positions()
+
+        mock_db.update_bet_price.assert_called_once_with(yes_bet.id, 0.72)
+
+
 # ── Stale Position Management ──────────────────────────────────────
 
 class TestStalePosition:

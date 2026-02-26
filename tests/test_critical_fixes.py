@@ -88,81 +88,70 @@ class TestUpdatePositionsSideAdjustment:
         # PnL% = (0.80 - 0.50) / 0.50 = +60%, exceeds +50% take profit
         mock_db.close_bet.assert_called_once_with(1, 0.80)
 
-    # -- NO bets: current_value == 1.0 - raw midpoint --
+    # -- NO bets: bet.token_id is the NO token, so clob_midpoint returns
+    #    the NO token's midpoint directly. No inversion needed. --
 
     @patch("src.simulator.db")
-    def test_no_bet_current_price_inverts_midpoint(self, mock_db):
-        """For NO bets, current_price should equal 1.0 - YES midpoint."""
+    def test_no_bet_current_price_uses_no_token_midpoint(self, mock_db):
+        """For NO bets, current_price is the NO token's midpoint (no inversion)."""
         bet = _make_open_bet(Side.NO, entry_price=0.50)
         mock_db.get_open_bets.return_value = [bet]
-        sim, _ = self._make_simulator(clob_midpoint_value=0.55, open_bets=[bet])
+        # clob_midpoint is called with the NO token and returns the NO token's price
+        sim, _ = self._make_simulator(clob_midpoint_value=0.45, open_bets=[bet])
 
         sim.update_positions()
 
-        # YES midpoint is 0.55, so NO value = 1.0 - 0.55 = 0.45
         assert bet.current_price == pytest.approx(0.45)
         mock_db.update_bet_price.assert_called_once_with(1, pytest.approx(0.45))
 
     @patch("src.simulator.db")
-    def test_no_bet_stop_loss_triggers_when_yes_price_rises(self, mock_db):
-        """NO bet: entry 0.50 (YES mid was 0.50), YES mid rises to 0.80
-        → NO value = 0.20 → PnL = -60% → stop loss."""
+    def test_no_bet_stop_loss_triggers_when_no_price_drops(self, mock_db):
+        """NO bet: entry 0.50, NO token midpoint drops to 0.20 → PnL = -60% → stop loss."""
         bet = _make_open_bet(Side.NO, entry_price=0.50)
         mock_db.get_open_bets.return_value = [bet]
-        sim, _ = self._make_simulator(clob_midpoint_value=0.80, open_bets=[bet])
+        sim, _ = self._make_simulator(clob_midpoint_value=0.20, open_bets=[bet])
 
         sim.update_positions()
 
-        # NO value = 1.0 - 0.80 = 0.20
         # PnL% = (0.20 - 0.50) / 0.50 = -60% → triggers stop loss
         mock_db.close_bet.assert_called_once_with(1, pytest.approx(0.20))
 
     @patch("src.simulator.db")
-    def test_no_bet_take_profit_triggers_when_yes_price_drops(self, mock_db):
-        """NO bet: entry 0.40 (YES mid was 0.60), YES mid drops to 0.15
-        → NO value = 0.85 → PnL = +112% → take profit."""
+    def test_no_bet_take_profit_triggers_when_no_price_rises(self, mock_db):
+        """NO bet: entry 0.40, NO token midpoint rises to 0.85 → PnL = +112% → take profit."""
         bet = _make_open_bet(Side.NO, entry_price=0.40)
         mock_db.get_open_bets.return_value = [bet]
-        sim, _ = self._make_simulator(clob_midpoint_value=0.15, open_bets=[bet])
+        sim, _ = self._make_simulator(clob_midpoint_value=0.85, open_bets=[bet])
 
         sim.update_positions()
 
-        # NO value = 1.0 - 0.15 = 0.85
         # PnL% = (0.85 - 0.40) / 0.40 = +112% → triggers take profit
         mock_db.close_bet.assert_called_once_with(1, pytest.approx(0.85))
 
     @patch("src.simulator.db")
     def test_no_bet_winning_does_not_trigger_stop_loss(self, mock_db):
-        """REGRESSION: Before the fix, a winning NO bet would trigger stop loss
-        because raw YES midpoint was compared to NO entry price.
-
-        NO bet: entry 0.60 (YES mid was 0.40), YES mid drops to 0.30
-        → NO value = 0.70 → PnL = +16.7% → no trigger."""
+        """NO bet: entry 0.60, NO token midpoint rises to 0.70 → PnL = +16.7% → no trigger."""
         bet = _make_open_bet(Side.NO, entry_price=0.60)
         mock_db.get_open_bets.return_value = [bet]
-        sim, _ = self._make_simulator(clob_midpoint_value=0.30, open_bets=[bet])
+        sim, _ = self._make_simulator(clob_midpoint_value=0.70, open_bets=[bet])
 
         sim.update_positions()
 
-        # NO value = 0.70, PnL% = (0.70 - 0.60) / 0.60 = +16.7%
+        # PnL% = (0.70 - 0.60) / 0.60 = +16.7%
         # Should NOT trigger stop loss or take profit
         mock_db.close_bet.assert_not_called()
         assert bet.current_price == pytest.approx(0.70)
 
     @patch("src.simulator.db")
     def test_no_bet_losing_does_not_trigger_take_profit(self, mock_db):
-        """REGRESSION: Before the fix, a losing NO bet would trigger take profit
-        because raw YES midpoint (high) was compared to NO entry price (low).
-
-        NO bet: entry 0.30 (YES mid was 0.70), YES mid rises to 0.80
-        → NO value = 0.20 → PnL = -33% → stop loss (not take profit)."""
+        """NO bet: entry 0.30, NO token midpoint drops to 0.20 → PnL = -33% → stop loss."""
         bet = _make_open_bet(Side.NO, entry_price=0.30)
         mock_db.get_open_bets.return_value = [bet]
-        sim, _ = self._make_simulator(clob_midpoint_value=0.80, open_bets=[bet])
+        sim, _ = self._make_simulator(clob_midpoint_value=0.20, open_bets=[bet])
 
         sim.update_positions()
 
-        # NO value = 0.20, PnL% = (0.20 - 0.30) / 0.30 = -33% → stop loss
+        # PnL% = (0.20 - 0.30) / 0.30 = -33% → stop loss (not take profit)
         mock_db.close_bet.assert_called_once_with(1, pytest.approx(0.20))
 
     # -- Edge cases --
