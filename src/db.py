@@ -266,23 +266,30 @@ def get_all_bets(trader_id: str | None = None) -> list[Bet]:
 
 def save_bet(bet: Bet) -> int:
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO bets (trader_id, market_id, market_question, side, amount, entry_price,
-                                  shares, token_id, status, placed_at, event_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id
-            """, (
-                bet.trader_id, bet.market_id, bet.market_question, bet.side.value,
-                bet.amount, bet.entry_price, bet.shares, bet.token_id,
-                bet.status.value, bet.placed_at, bet.event_id,
-            ))
-            bet_id = cur.fetchone()[0]
-            cur.execute(
-                "UPDATE portfolio SET balance = balance - %s, total_bets = total_bets + 1 WHERE trader_id = %s",
-                (bet.amount, bet.trader_id),
-            )
-        conn.commit()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO bets (trader_id, market_id, market_question, side, amount, entry_price,
+                                      shares, token_id, status, placed_at, event_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (
+                    bet.trader_id, bet.market_id, bet.market_question, bet.side.value,
+                    bet.amount, bet.entry_price, bet.shares, bet.token_id,
+                    bet.status.value, bet.placed_at, bet.event_id,
+                ))
+                result = cur.fetchone()
+                if not result:
+                    raise RuntimeError("INSERT did not return bet id")
+                bet_id = result[0]
+                cur.execute(
+                    "UPDATE portfolio SET balance = balance - %s, total_bets = total_bets + 1 WHERE trader_id = %s",
+                    (bet.amount, bet.trader_id),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     return bet_id
 
 
@@ -298,61 +305,80 @@ def update_bet_price(bet_id: int, current_price: float):
 
 def resolve_bet(bet_id: int, won: bool, exit_price: float):
     with get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM bets WHERE id = %s", (bet_id,))
-            row = cur.fetchone()
-            if not row:
-                return
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT * FROM bets WHERE id = %s FOR UPDATE", (bet_id,))
+                row = cur.fetchone()
+                if not row:
+                    return
+                if row["status"] != BetStatus.OPEN.value:
+                    return  # Already resolved by another thread
 
-            shares = row["shares"]
-            cost = row["amount"]
-            payout = shares * 1.0 if won else 0.0
-            pnl = payout - cost
-            status = BetStatus.WON if won else BetStatus.LOST
+                shares = row["shares"]
+                cost = row["amount"]
+                payout = shares * 1.0 if won else 0.0
+                pnl = payout - cost
+                status = BetStatus.WON if won else BetStatus.LOST
 
-            cur.execute("""
-                UPDATE bets SET status = %s, exit_price = %s, pnl = %s, resolved_at = %s
-                WHERE id = %s
-            """, (status.value, exit_price, pnl, datetime.now(timezone.utc), bet_id))
+                cur.execute("""
+                    UPDATE bets SET status = %s, exit_price = %s, pnl = %s, resolved_at = %s
+                    WHERE id = %s
+                """, (status.value, exit_price, pnl, datetime.now(timezone.utc), bet_id))
 
-            win_inc = 1 if won else 0
-            loss_inc = 0 if won else 1
-            cur.execute("""
-                UPDATE portfolio
-                SET balance = balance + %s,
-                    wins = wins + %s,
-                    losses = losses + %s,
-                    realized_pnl = realized_pnl + %s
-                WHERE trader_id = %s
-            """, (payout, win_inc, loss_inc, pnl, row["trader_id"]))
-        conn.commit()
+                win_inc = 1 if won else 0
+                loss_inc = 0 if won else 1
+                cur.execute("""
+                    UPDATE portfolio
+                    SET balance = balance + %s,
+                        wins = wins + %s,
+                        losses = losses + %s,
+                        realized_pnl = realized_pnl + %s
+                    WHERE trader_id = %s
+                """, (payout, win_inc, loss_inc, pnl, row["trader_id"]))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def close_bet(bet_id: int, exit_price: float):
     """Early exit at market price (not binary resolution)."""
     with get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM bets WHERE id = %s", (bet_id,))
-            row = cur.fetchone()
-            if not row:
-                return
-            shares = row["shares"]
-            cost = row["amount"]
-            payout = shares * exit_price
-            pnl = payout - cost
-            won = pnl > 0
-            cur.execute("""
-                UPDATE bets SET status=%s, exit_price=%s, pnl=%s, resolved_at=%s
-                WHERE id=%s
-            """, (BetStatus.EXITED.value, exit_price, pnl, datetime.now(timezone.utc), bet_id))
-            update_col = "wins" if won else "losses"
-            cur.execute(f"""
-                UPDATE portfolio
-                SET balance = balance + %s, realized_pnl = realized_pnl + %s,
-                    {update_col} = {update_col} + 1
-                WHERE trader_id = %s
-            """, (payout, pnl, row["trader_id"]))
-        conn.commit()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT * FROM bets WHERE id = %s FOR UPDATE", (bet_id,))
+                row = cur.fetchone()
+                if not row:
+                    return
+                if row["status"] != BetStatus.OPEN.value:
+                    return  # Already resolved/closed by another thread
+                shares = row["shares"]
+                cost = row["amount"]
+                payout = shares * exit_price
+                pnl = payout - cost
+                won = pnl > 0
+                cur.execute("""
+                    UPDATE bets SET status=%s, exit_price=%s, pnl=%s, resolved_at=%s
+                    WHERE id=%s
+                """, (BetStatus.EXITED.value, exit_price, pnl, datetime.now(timezone.utc), bet_id))
+                if won:
+                    cur.execute("""
+                        UPDATE portfolio
+                        SET balance = balance + %s, realized_pnl = realized_pnl + %s,
+                            wins = wins + 1
+                        WHERE trader_id = %s
+                    """, (payout, pnl, row["trader_id"]))
+                else:
+                    cur.execute("""
+                        UPDATE portfolio
+                        SET balance = balance + %s, realized_pnl = realized_pnl + %s,
+                            losses = losses + 1
+                        WHERE trader_id = %s
+                    """, (payout, pnl, row["trader_id"]))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def get_resolved_bets(trader_id: str) -> list[Bet]:

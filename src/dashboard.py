@@ -7,6 +7,7 @@ View: http://localhost:8000
 
 import asyncio
 import logging
+import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
@@ -35,6 +36,7 @@ sim_state = {
 }
 
 SIM_INTERVAL_SECONDS = 300  # 5 minutes
+_sim_lock = threading.Lock()  # Guards sim_state mutations from _run_cycle thread
 
 
 def _init_trader_state(tid: str, paused_set: set[str]):
@@ -228,17 +230,24 @@ async def simulation_loop():
     await asyncio.sleep(5)
 
     while True:
-        sim_state["status"] = "running"
+        if sim_state["status"] == "running":
+            logger.warning("Previous cycle still running, skipping")
+            await asyncio.sleep(30)
+            continue
+        with _sim_lock:
+            sim_state["status"] = "running"
         try:
             await asyncio.to_thread(_run_cycle)
         except Exception as e:
-            sim_state["last_error"] = str(e)
-            for tid_state in sim_state["traders"].values():
-                if tid_state.get("status") not in ("paused", "idle"):
-                    tid_state["status"] = "error"
+            with _sim_lock:
+                sim_state["last_error"] = str(e)
+                for tid_state in sim_state["traders"].values():
+                    if tid_state.get("status") not in ("paused", "idle"):
+                        tid_state["status"] = "error"
             logger.error("Simulation error: %s\n%s", e, traceback.format_exc())
 
-        sim_state["status"] = "waiting"
+        with _sim_lock:
+            sim_state["status"] = "waiting"
         await asyncio.sleep(SIM_INTERVAL_SECONDS)
 
 
@@ -387,11 +396,25 @@ async def api_backtest(run_id: str):
 
 # --- Dashboard Controls API ---
 
-ALLOWED_SETTINGS = {
-    "PAUSED_TRADERS", "SIM_KELLY_FRACTION", "SIM_MIN_CONFIDENCE",
-    "SIM_MIN_EDGE", "SIM_STOP_LOSS", "SIM_TAKE_PROFIT",
-    "SIM_MAX_SPREAD", "SIM_SCAN_MODE", "SIM_MAX_POSITION_DAYS",
+def _validate_scan_mode(v):
+    s = str(v)
+    if s not in ("popular", "niche", "mixed"):
+        raise ValueError("must be popular, niche, or mixed")
+    return s
+
+
+SETTINGS_VALIDATORS = {
+    "PAUSED_TRADERS": lambda v: ",".join(t.strip() for t in str(v).split(",") if t.strip()),
+    "SIM_KELLY_FRACTION": lambda v: str(float(v)),
+    "SIM_MIN_CONFIDENCE": lambda v: str(float(v)),
+    "SIM_MIN_EDGE": lambda v: str(float(v)),
+    "SIM_STOP_LOSS": lambda v: str(float(v)),
+    "SIM_TAKE_PROFIT": lambda v: str(float(v)),
+    "SIM_MAX_SPREAD": lambda v: str(float(v)),
+    "SIM_SCAN_MODE": _validate_scan_mode,
+    "SIM_MAX_POSITION_DAYS": lambda v: str(int(v)),
 }
+ALLOWED_SETTINGS = set(SETTINGS_VALIDATORS.keys())
 
 
 @app.post("/api/settings")
@@ -401,15 +424,21 @@ async def update_setting(request: Request):
     value = body.get("value")
     if key not in ALLOWED_SETTINGS:
         return JSONResponse({"error": "Invalid key"}, status_code=400)
-    db.set_runtime_config(key, str(value))
+    try:
+        validated = SETTINGS_VALIDATORS[key](value)
+    except (ValueError, TypeError) as e:
+        return JSONResponse({"error": f"Invalid value for {key}: {e}"}, status_code=400)
+    db.set_runtime_config(key, validated)
     config.load_runtime_overrides()
-    return JSONResponse({"ok": True, "key": key, "value": value})
+    return JSONResponse({"ok": True, "key": key, "value": validated})
 
 
 @app.post("/api/cycle")
 async def force_cycle():
-    if sim_state["status"] == "running":
-        return JSONResponse({"error": "Cycle already running"}, status_code=409)
+    with _sim_lock:
+        if sim_state["status"] == "running":
+            return JSONResponse({"error": "Cycle already running"}, status_code=409)
+        sim_state["status"] = "running"
     asyncio.create_task(asyncio.to_thread(_run_cycle))
     return JSONResponse({"ok": True})
 
@@ -420,6 +449,7 @@ async def close_position(bet_id: int):
     if not bet or bet.status.value != "OPEN":
         return JSONResponse({"error": "Bet not found or not open"}, status_code=404)
     exit_price = bet.current_price or bet.entry_price
+    # close_bet uses FOR UPDATE lock — safe against concurrent resolution
     db.close_bet(bet.id, exit_price)
     pnl = bet.shares * exit_price - bet.amount
     return JSONResponse({"ok": True, "pnl": round(pnl, 2)})
