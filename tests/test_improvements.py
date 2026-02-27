@@ -2,8 +2,10 @@
 
 import pytest
 from datetime import datetime, timezone
+from unittest.mock import patch
 from freezegun import freeze_time
 
+from src.config import config
 from src.models import Analysis, Bet, BetStatus, Market, Portfolio, Recommendation, Side
 from src.analyzer import (
     EnsembleAnalyzer,
@@ -239,7 +241,9 @@ class TestEnsembleAggregate:
             _make_analysis("m1", "a", Recommendation.BUY_YES, 0.8, 0.80),
             _make_analysis("m1", "b", Recommendation.BUY_YES, 0.4, 0.60),
         ]
-        analysis = ensemble.aggregate(self.MARKET, results)
+        # Disable market consensus to test pure confidence weighting
+        with patch.object(config, "USE_MARKET_CONSENSUS", False):
+            analysis = ensemble.aggregate(self.MARKET, results)
         # Confidence-weighted: (0.80*0.8 + 0.60*0.4) / (0.8+0.4) ≈ 0.733
         assert analysis.estimated_probability == pytest.approx(0.733, abs=0.01)
 

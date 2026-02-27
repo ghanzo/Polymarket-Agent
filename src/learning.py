@@ -1,10 +1,13 @@
-"""Learning feedback loop — dynamic model weights and error pattern detection.
+"""Learning feedback loop — dynamic model weights, error patterns, Platt scaling.
 
 Uses historical performance data (Brier scores, calibration, category accuracy)
 to adjust ensemble voting weights and inject error-awareness into prompts.
+Platt scaling fits a logistic function to correct LLM hedging bias.
 """
 
 import logging
+
+import numpy as np
 
 from src.config import config
 
@@ -13,13 +16,15 @@ logger = logging.getLogger("learning")
 # Module-level cache, reset per cycle via reset_weights()
 _cached_model_weights: dict[str, float] | None = None
 _cached_category_weights: dict[str, dict[str, float]] | None = None
+_cached_platt_params: dict[str, tuple[float, float]] | None = None
 
 
 def reset_weights():
-    """Clear cached weights. Call at the start of each scan cycle."""
-    global _cached_model_weights, _cached_category_weights
+    """Clear cached weights and Platt params. Call at the start of each scan cycle."""
+    global _cached_model_weights, _cached_category_weights, _cached_platt_params
     _cached_model_weights = None
     _cached_category_weights = None
+    _cached_platt_params = None
 
 
 def compute_model_weights(min_resolved: int | None = None) -> dict[str, float]:
@@ -198,3 +203,92 @@ def detect_error_patterns(trader_id: str, min_samples: int = 10) -> list[str]:
         pass
 
     return patterns
+
+
+def fit_platt_scaling(trader_id: str, min_samples: int | None = None) -> tuple[float, float] | None:
+    """Fit Platt scaling (logistic regression) on historical predictions vs outcomes.
+
+    Corrects systematic LLM hedging bias (tendency to predict closer to 50%).
+
+    Returns:
+        (A, B) coefficients for sigmoid: calibrated = 1 / (1 + exp(A*x + B))
+        where x = log(p / (1-p)) is the log-odds of the raw prediction.
+        None if insufficient data.
+    """
+    global _cached_platt_params
+    if _cached_platt_params is not None and trader_id in _cached_platt_params:
+        return _cached_platt_params[trader_id]
+
+    if min_samples is None:
+        min_samples = config.PLATT_MIN_SAMPLES
+
+    try:
+        from src import db
+        from src.models import BetStatus, Side
+    except Exception:
+        return None
+
+    try:
+        resolved = db.get_resolved_bets(trader_id)
+        if len(resolved) < min_samples:
+            return None
+
+        predictions = []
+        outcomes = []
+        for bet in resolved:
+            analysis = db.get_analysis_for_bet(trader_id, bet.market_id)
+            if not analysis or analysis.get("estimated_probability") is None:
+                continue
+            est_prob = analysis["estimated_probability"]
+            # Clamp to avoid log(0) — keep away from exact 0 and 1
+            est_prob = max(0.01, min(0.99, est_prob))
+            yes_won = (bet.status == BetStatus.WON) if bet.side == Side.YES else (bet.status == BetStatus.LOST)
+            predictions.append(est_prob)
+            outcomes.append(1.0 if yes_won else 0.0)
+
+        if len(predictions) < min_samples:
+            return None
+
+        # Fit logistic regression: outcome ~ sigmoid(A * log_odds + B)
+        from sklearn.linear_model import LogisticRegression
+        log_odds = np.array([np.log(p / (1 - p)) for p in predictions]).reshape(-1, 1)
+        y = np.array(outcomes)
+
+        lr = LogisticRegression(solver="lbfgs", max_iter=1000)
+        lr.fit(log_odds, y)
+
+        # Extract A, B: sklearn uses P(y=1) = sigmoid(coef * x + intercept)
+        # Our convention: calibrated = sigmoid(A * log_odds + B)
+        A = float(lr.coef_[0][0])
+        B = float(lr.intercept_[0])
+
+        if _cached_platt_params is None:
+            _cached_platt_params = {}
+        _cached_platt_params[trader_id] = (A, B)
+        logger.info("Platt scaling for %s: A=%.3f, B=%.3f (n=%d)", trader_id, A, B, len(predictions))
+        return (A, B)
+
+    except Exception as e:
+        logger.debug("Platt scaling fit failed for %s: %s", trader_id, e)
+        return None
+
+
+def apply_platt_scaling(est_prob: float, trader_id: str) -> float:
+    """Apply Platt scaling to a raw probability estimate.
+
+    Returns calibrated probability. Falls back to est_prob if no model fitted.
+    """
+    if not config.USE_PLATT_SCALING:
+        return est_prob
+
+    params = fit_platt_scaling(trader_id)
+    if params is None:
+        return est_prob
+
+    A, B = params
+    est_prob_clamped = max(0.01, min(0.99, est_prob))
+    log_odds = np.log(est_prob_clamped / (1 - est_prob_clamped))
+    calibrated = 1.0 / (1.0 + np.exp(-(A * log_odds + B)))
+    calibrated = float(calibrated)
+    # Clamp to valid probability range
+    return max(0.01, min(0.99, calibrated))

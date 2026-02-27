@@ -348,9 +348,8 @@ class TestFeatureNames:
 class TestIntegrationPoints:
 
     def test_run_sim_imports_prescreener(self):
-        """run_sim.py should import the prescreener."""
-        import importlib
-        source = open("src/run_sim.py").read()
+        """cycle_runner.py should import the prescreener."""
+        source = open("src/cycle_runner.py").read()
         assert "MarketPreScreener" in source
         assert "prescreener" in source
 

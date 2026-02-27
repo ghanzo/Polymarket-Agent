@@ -1,8 +1,10 @@
 import json
+from unittest.mock import patch
 
 import pytest
 from freezegun import freeze_time
 
+from src.config import config
 from src.analyzer import (
     Analyzer,
     EnsembleAnalyzer,
@@ -319,10 +321,12 @@ class TestEnsembleMajority:
         # Model a: 80% confidence (weight=0.8), est_prob=0.80
         # Model b: 40% confidence (weight=0.4), est_prob=0.60
         # Confidence-weighted: (0.80*0.8 + 0.60*0.4) / (0.8+0.4) ≈ 0.733
+        # Market consensus blending may shift this, so disable it for this test
         analyzers = [
             _FakeAnalyzer(_make_analysis("m1", "a", Recommendation.BUY_YES, 0.8, 0.80)),
             _FakeAnalyzer(_make_analysis("m1", "b", Recommendation.BUY_YES, 0.4, 0.60)),
         ]
         ensemble = EnsembleAnalyzer(analyzers)
-        result = ensemble.analyze(self.MARKET)
+        with patch.object(config, "USE_MARKET_CONSENSUS", False):
+            result = ensemble.analyze(self.MARKET)
         assert result.estimated_probability == pytest.approx(0.733, abs=0.01)

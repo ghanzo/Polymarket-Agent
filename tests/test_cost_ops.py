@@ -535,7 +535,7 @@ class TestLongshotBias:
         )
         mock_db.has_open_bet_on_market.return_value = False
         mock_db.count_open_bets_by_event.return_value = 0
-        mock_db.get_portfolio.return_value = MagicMock(balance=1000)
+        mock_db.get_portfolio.return_value = MagicMock(balance=1000, portfolio_value=1000)
         mock_db.get_daily_realized_pnl.return_value = 0.0
 
         result = sim.place_bet(market, analysis)
@@ -582,7 +582,7 @@ class TestLongshotBias:
         )
         mock_db.has_open_bet_on_market.return_value = False
         mock_db.count_open_bets_by_event.return_value = 0
-        mock_db.get_portfolio.return_value = MagicMock(balance=1000)
+        mock_db.get_portfolio.return_value = MagicMock(balance=1000, portfolio_value=1000)
         mock_db.get_daily_realized_pnl.return_value = 0.0
 
         result = sim.place_bet(market, analysis)
@@ -818,9 +818,9 @@ class TestStructuredLogging:
         assert hasattr(run_sim, "logger")
 
     def test_run_sim_logs_metrics(self):
-        """run_sim should reference cost_tracker for end-of-cycle metrics."""
+        """cycle_runner should reference cost_tracker for end-of-cycle metrics."""
         import inspect
-        from src import run_sim
-        source = inspect.getsource(run_sim.run)
+        from src import cycle_runner
+        source = inspect.getsource(cycle_runner.run_cycle)
         assert "latency_stats" in source
         assert "cache_stats" in source

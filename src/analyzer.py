@@ -682,6 +682,13 @@ class EnsembleAnalyzer(Analyzer):
             avg_prob = sum(r.estimated_probability * w for r, w in zip(voters, voter_weights)) / w_total
             avg_confidence = sum(r.confidence * w for r, w in zip(voters, voter_weights)) / w_total
 
+            # Market consensus: blend model probability with market price
+            midpoint = market.midpoint
+            if config.USE_MARKET_CONSENSUS and midpoint is not None and 0.01 < midpoint < 0.99:
+                market_weight = self._compute_market_weight(market)
+                model_weight = 1.0 - market_weight
+                avg_prob = avg_prob * model_weight + midpoint * market_weight
+
             # Disagreement penalty
             probs = [r.estimated_probability for r in non_skip]
             if len(probs) > 1:
@@ -713,6 +720,38 @@ class EnsembleAnalyzer(Analyzer):
             reasoning=f"Models disagree: {combined}",
             category=category,
         )
+
+    @staticmethod
+    def _compute_market_weight(market: Market) -> float:
+        """Compute weight for market price in consensus blend.
+
+        Higher liquidity/volume = more informative price = higher weight.
+        Returns value between 0 and MARKET_CONSENSUS_BASE_WEIGHT.
+        """
+        base = config.MARKET_CONSENSUS_BASE_WEIGHT
+        try:
+            volume = float(market.volume or 0)
+            liquidity = float(market.liquidity or 0)
+        except (ValueError, TypeError):
+            return base * 0.5
+
+        # Scale by volume: $100K+ = full weight, $1K = minimal weight
+        if volume >= 100_000:
+            vol_scale = 1.0
+        elif volume >= 1_000:
+            vol_scale = 0.3 + 0.7 * (volume - 1_000) / 99_000
+        else:
+            vol_scale = 0.3
+
+        # Scale by liquidity: $50K+ = full, $1K = minimal
+        if liquidity >= 50_000:
+            liq_scale = 1.0
+        elif liquidity >= 1_000:
+            liq_scale = 0.3 + 0.7 * (liquidity - 1_000) / 49_000
+        else:
+            liq_scale = 0.3
+
+        return base * (vol_scale + liq_scale) / 2
 
     def debate(self, market: Market, round1_results: list[Analysis], web_context: str = "") -> Analysis:
         """Full debate: Round 1 results -> Round 2 rebuttals -> Round 3 synthesis."""

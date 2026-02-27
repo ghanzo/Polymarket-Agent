@@ -125,6 +125,12 @@ class Config:
     # Learning feedback loop
     USE_ERROR_PATTERNS: bool = os.getenv("USE_ERROR_PATTERNS", "true").lower() == "true"
     LEARNING_MIN_RESOLVED: int = int(os.getenv("LEARNING_MIN_RESOLVED", "10"))
+    USE_PLATT_SCALING: bool = os.getenv("USE_PLATT_SCALING", "true").lower() == "true"
+    PLATT_MIN_SAMPLES: int = int(os.getenv("PLATT_MIN_SAMPLES", "50"))
+
+    # Market consensus ensemble
+    USE_MARKET_CONSENSUS: bool = os.getenv("USE_MARKET_CONSENSUS", "true").lower() == "true"
+    MARKET_CONSENSUS_BASE_WEIGHT: float = float(os.getenv("MARKET_CONSENSUS_BASE_WEIGHT", "0.3"))
 
     # Strategy signals
     STRATEGY_SIGNALS_ENABLED: bool = os.getenv("STRATEGY_SIGNALS_ENABLED", "true").lower() == "true"

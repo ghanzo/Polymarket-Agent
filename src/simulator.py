@@ -36,9 +36,9 @@ class Simulator:
 
         portfolio = db.get_portfolio(self.trader_id)
 
-        # Portfolio-level max drawdown check
+        # Portfolio-level max drawdown check (use total value, not just cash)
         drawdown_floor = config.SIM_STARTING_BALANCE * (1 - config.SIM_MAX_DRAWDOWN)
-        if portfolio.balance < drawdown_floor:
+        if portfolio.portfolio_value < drawdown_floor:
             logger.warning("Max drawdown reached (%.0f%%), pausing trading for %s",
                            config.SIM_MAX_DRAWDOWN * 100, self.trader_id)
             return None
@@ -70,6 +70,13 @@ class Simulator:
             est_prob = db.calibrate_probability(
                 self.trader_id, est_prob, min_samples=config.MIN_CALIBRATION_SAMPLES
             )
+
+        # Platt scaling: correct LLM hedging bias via logistic regression
+        try:
+            from src.learning import apply_platt_scaling
+            est_prob = apply_platt_scaling(est_prob, self.trader_id)
+        except Exception:
+            pass
 
         # Longshot bias correction (Snowberg & Wolfers 2010)
         # LLMs overestimate longshots and underestimate favorites

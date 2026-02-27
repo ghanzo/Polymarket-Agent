@@ -9,7 +9,6 @@ import asyncio
 import logging
 import threading
 import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,7 +17,6 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
-from src.api import PolymarketAPI
 from src.analyzer import cost_tracker
 from src.config import config
 from src.models import TRADER_IDS
@@ -55,155 +53,53 @@ def _init_trader_state(tid: str, paused_set: set[str]):
 
 def _run_cycle():
     """Run one simulation cycle (blocking). Called from a thread so the web server stays responsive."""
-    from src.analyzer import get_individual_analyzers, EnsembleAnalyzer, _build_web_context  # noqa: E402
-    from src.scanner import MarketScanner
-    from src.simulator import Simulator  # Also used for performance reviews below
+    from src.cycle_runner import run_cycle
 
-    config.load_runtime_overrides()
-    cli = PolymarketAPI()
-    scanner = MarketScanner(cli)
     paused = set(config.PAUSED_TRADERS) if hasattr(config, "PAUSED_TRADERS") else set()
-
-    logger.info("=== Cycle %d starting ===", sim_state["cycle_count"] + 1)
+    cycle_num = sim_state["cycle_count"] + 1
+    logger.info("=== Cycle %d starting ===", cycle_num)
 
     # Initialize all trader states for this cycle
     for tid in TRADER_IDS:
         _init_trader_state(tid, paused)
 
-    # 1. Scan markets (shared across all traders)
-    markets = scanner.scan(max_markets=config.SIM_MAX_MARKETS)
-    sim_state["markets_scanned"] = len(markets)
-    logger.info("Scanned %d candidate markets", len(markets))
+    def _on_status(tid, status, **kwargs):
+        """Thread-safe callback to update sim_state from cycle_runner."""
+        with _sim_lock:
+            if tid not in sim_state["traders"]:
+                _init_trader_state(tid, paused)
+            sim_state["traders"][tid]["status"] = status
+            if "current_market" in kwargs:
+                sim_state["traders"][tid]["current_market"] = kwargs["current_market"]
+            if status == "idle":
+                sim_state["traders"][tid]["current_market"] = ""
+                sim_state["traders"][tid]["last_action"] = datetime.now(timezone.utc).isoformat()
 
-    # 1b. ML pre-screening: filter before expensive LLM calls
-    if config.ML_PRESCREENER_ENABLED:
-        from src.prescreener import MarketPreScreener
-        prescreener = MarketPreScreener()
-        pre_count = len(markets)
-        markets = prescreener.filter(markets)
-        sim_state["markets_prescreened"] = pre_count
-        logger.info("Pre-screener: %d → %d markets", pre_count, len(markets))
+    result = run_cycle(
+        parallel_analysis=True,
+        cycle_number=cycle_num,
+        on_trader_status=_on_status,
+    )
 
-    # 2. Get all available analyzers
-    analyzers = get_individual_analyzers()
-    if not analyzers:
-        logger.warning("No AI analyzers available — check API keys")
-        sim_state["last_error"] = "No API keys configured"
-        return
-
-    # 3. Fetch web context for each market (once, shared across models)
-    web_contexts = {}
-    for market in markets:
-        web_contexts[market.id] = _build_web_context(market)
-        if web_contexts[market.id]:
-            logger.info("Web context fetched for: %s", market.question[:50])
-
-    # 4. Run each model in parallel
-    def _analyze_all_markets(analyzer):
-        """Run one analyzer across all markets. Returns (trader_id, results_list)."""
-        tid = analyzer.TRADER_ID
-        sim_state["traders"][tid]["status"] = "analyzing"
-        results = []
-        for market in markets:
-            sim_state["traders"][tid]["current_market"] = market.question[:50]
-            try:
-                # Skip if recently analyzed (cooldown)
-                if db.is_analysis_on_cooldown(tid, market.id, config.SIM_ANALYSIS_COOLDOWN_HOURS):
-                    continue
-                analysis = analyzer.analyze(market, web_contexts.get(market.id, ""))
-                results.append((market, analysis))
-                sim_state["traders"][tid]["markets_analyzed"] += 1
-                db.save_analysis(
-                    tid, market.id, analysis.model,
-                    analysis.recommendation.value,
-                    analysis.confidence, analysis.estimated_probability,
-                    analysis.reasoning,
-                    category=analysis.category,
+    # Update sim_state from result
+    with _sim_lock:
+        sim_state["markets_scanned"] = result.markets_scanned
+        if result.markets_prescreened:
+            sim_state["markets_prescreened"] = result.markets_prescreened
+        for tid, bets in result.bets_by_trader.items():
+            if tid in sim_state["traders"]:
+                sim_state["traders"][tid]["bets_placed"] = sim_state["traders"][tid].get("bets_placed", 0) + bets
+                sim_state["traders"][tid]["bets_this_cycle"] = bets
+                analyses_count = len(result.analyses_by_trader.get(tid, []))
+                sim_state["traders"][tid]["markets_analyzed"] = analyses_count
+                sim_state["traders"][tid]["last_action_desc"] = (
+                    f"Analyzed {analyses_count} markets, placed {bets} bets"
                 )
-            except Exception as e:
-                sim_state["traders"][tid]["errors"] += 1
-                logger.warning("[%s] Error on %s: %s", tid, market.question[:40], e, exc_info=True)
-        sim_state["traders"][tid]["status"] = "idle"
-        sim_state["traders"][tid]["current_market"] = ""
-        sim_state["traders"][tid]["last_action"] = datetime.now(timezone.utc).isoformat()
-        return tid, results
+        for tid, err_count in result.errors_by_trader.items():
+            if tid in sim_state["traders"]:
+                sim_state["traders"][tid]["errors"] = sim_state["traders"][tid].get("errors", 0) + err_count
 
-    all_analyses = {}
-    with ThreadPoolExecutor(max_workers=len(analyzers)) as pool:
-        futures = {pool.submit(_analyze_all_markets, a): a for a in analyzers}
-        for future in as_completed(futures):
-            tid, results = future.result()
-            all_analyses[tid] = results
-
-    logger.info("All models finished analysis in parallel")
-
-    # 5. Run ensemble — aggregate cached results (no re-calling models)
-    if len(analyzers) >= 2 and "ensemble" not in paused:
-        ensemble = EnsembleAnalyzer(analyzers)
-        all_analyses["ensemble"] = []
-        sim_state["traders"]["ensemble"]["status"] = "analyzing"
-
-        # Build per-market results from individual model analyses
-        market_results: dict[str, list] = {}
-        for tid, results in all_analyses.items():
-            for market, analysis in results:
-                market_results.setdefault(market.id, []).append(analysis)
-
-        for market in markets:
-            sim_state["traders"]["ensemble"]["current_market"] = market.question[:50]
-            try:
-                cached = market_results.get(market.id, [])
-                if not cached:
-                    continue
-                if config.USE_DEBATE_MODE:
-                    analysis = ensemble.debate(market, cached, web_contexts.get(market.id, ""))
-                else:
-                    analysis = ensemble.aggregate(market, cached)
-                all_analyses["ensemble"].append((market, analysis))
-                sim_state["traders"]["ensemble"]["markets_analyzed"] += 1
-                db.save_analysis(
-                    "ensemble", market.id, analysis.model,
-                    analysis.recommendation.value,
-                    analysis.confidence, analysis.estimated_probability,
-                    analysis.reasoning,
-                    category=analysis.category,
-                )
-            except Exception as e:
-                sim_state["traders"]["ensemble"]["errors"] += 1
-                logger.warning("[ensemble] Error on %s: %s", market.question[:40], e)
-        sim_state["traders"]["ensemble"]["status"] = "idle"
-        sim_state["traders"]["ensemble"]["current_market"] = ""
-        sim_state["traders"]["ensemble"]["last_action"] = datetime.now(timezone.utc).isoformat()
-
-    # 6. Place bets for each trader
-    for tid, market_analyses in all_analyses.items():
-        sim_state["traders"][tid]["status"] = "betting"
-        sim = Simulator(cli, tid)
-        cycle_bets = 0
-        for market, analysis in market_analyses:
-            bet = sim.place_bet(market, analysis)
-            if bet:
-                sim_state["traders"][tid]["bets_placed"] += 1
-                cycle_bets += 1
-                logger.info("[%s] BET #%d: %s on '%s' — $%.2f (Kelly)",
-                            tid, bet.id, bet.side.value,
-                            bet.market_question[:45], bet.amount)
-
-        sim_state["traders"][tid]["status"] = "updating"
-        sim.update_positions()
-        sim.check_resolutions()
-
-        sim_state["traders"][tid]["bets_this_cycle"] = cycle_bets
-        sim_state["traders"][tid]["status"] = "idle"
-        now_iso = datetime.now(timezone.utc).isoformat()
-        sim_state["traders"][tid]["last_action"] = now_iso
-        sim_state["traders"][tid]["last_action_desc"] = (
-            f"Analyzed {sim_state['traders'][tid]['markets_analyzed']} markets, "
-            f"placed {cycle_bets} bets"
-        )
-
-    # 7. Save portfolio snapshots for charts
-    cycle_num = sim_state["cycle_count"] + 1
+    # Save portfolio snapshots for charts
     for tid in TRADER_IDS:
         try:
             p = db.get_portfolio(tid)
@@ -221,21 +117,10 @@ def _run_cycle():
         except Exception as e:
             logger.warning("Failed to snapshot %s: %s", tid, e)
 
-    # 8. Performance reviews
-    for tid in TRADER_IDS:
-        try:
-            sim = Simulator(cli, tid)
-            review = sim.run_performance_review(cycle_number=cycle_num)
-            if review:
-                logger.info("[%s] Performance: %d/%d correct (%.0f%%), Brier: %.4f",
-                            tid, review["correct"], review["total_resolved"],
-                            review["accuracy"] * 100, review["brier_score"])
-        except Exception as e:
-            logger.warning("Performance review failed for %s: %s", tid, e)
-
-    sim_state["cycle_count"] += 1
-    sim_state["last_run"] = datetime.now(timezone.utc).isoformat()
-    sim_state["last_error"] = None
+    with _sim_lock:
+        sim_state["cycle_count"] = cycle_num
+        sim_state["last_run"] = datetime.now(timezone.utc).isoformat()
+        sim_state["last_error"] = None
     logger.info("=== Cycle complete ===")
 
 
@@ -505,6 +390,9 @@ async def close_position(bet_id: int):
     # close_bet uses FOR UPDATE lock — safe against concurrent resolution
     db.close_bet(bet.id, exit_price)
     pnl = bet.shares * exit_price - bet.amount
+    # Apply fee on profits to match db.close_bet() behavior
+    if pnl > 0:
+        pnl -= pnl * config.SIM_FEE_RATE
     return JSONResponse({"ok": True, "pnl": round(pnl, 2)})
 
 
