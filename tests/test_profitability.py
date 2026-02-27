@@ -24,16 +24,16 @@ class TestTrailingStopTiers:
         )
 
     def test_tier1_normal_stop(self):
-        """Default: stop at entry * (1 - 0.25) = 0.375 when no peak above breakeven trigger."""
-        bet = self._make_bet(entry_price=0.50, peak_price=0.55)
-        # peak_gain_pct = (0.55 - 0.50) / 0.50 = 0.10 < 0.20 breakeven trigger
+        """Default: stop at entry * (1 - 0.15) = 0.425 when no peak above breakeven trigger."""
+        bet = self._make_bet(entry_price=0.50, peak_price=0.52)
+        # peak_gain_pct = (0.52 - 0.50) / 0.50 = 0.04 < 0.15 breakeven trigger
         stop_level = bet.entry_price * (1 - config.SIM_STOP_LOSS)
-        assert stop_level == pytest.approx(0.375, abs=0.001)
+        assert stop_level == pytest.approx(0.425, abs=0.001)
 
     def test_tier2_breakeven_stop(self):
-        """When peak >= +20%, stop at breakeven (entry price)."""
-        bet = self._make_bet(entry_price=0.50, peak_price=0.62)
-        # peak_gain_pct = (0.62 - 0.50) / 0.50 = 0.24 >= 0.20
+        """When peak >= +15%, stop at breakeven (entry price)."""
+        bet = self._make_bet(entry_price=0.50, peak_price=0.60)
+        # peak_gain_pct = (0.60 - 0.50) / 0.50 = 0.20 >= 0.15
         peak_gain_pct = (bet.peak_price - bet.entry_price) / bet.entry_price
         assert peak_gain_pct >= config.SIM_TRAILING_BREAKEVEN_TRIGGER
         assert peak_gain_pct < config.SIM_TRAILING_PROFIT_TRIGGER
@@ -41,18 +41,18 @@ class TestTrailingStopTiers:
         assert stop_level == 0.50
 
     def test_tier3_profit_lock_stop(self):
-        """When peak >= +35%, stop at entry * (1 + 0.15) = lock profit."""
+        """When peak >= +25%, stop at entry * (1 + 0.15) = lock profit."""
         bet = self._make_bet(entry_price=0.50, peak_price=0.70)
-        # peak_gain_pct = (0.70 - 0.50) / 0.50 = 0.40 >= 0.35
+        # peak_gain_pct = (0.70 - 0.50) / 0.50 = 0.40 >= 0.25
         peak_gain_pct = (bet.peak_price - bet.entry_price) / bet.entry_price
         assert peak_gain_pct >= config.SIM_TRAILING_PROFIT_TRIGGER
         stop_level = bet.entry_price * (1 + config.SIM_TRAILING_PROFIT_LOCK)
         assert stop_level == pytest.approx(0.575, abs=0.001)
 
     def test_tier4_take_profit(self):
-        """When current >= +50%, take profit and exit."""
+        """When current >= +40%, take profit and exit."""
         bet = self._make_bet(entry_price=0.50)
-        current_value = 0.76  # +52%
+        current_value = 0.71  # +42%
         pnl_pct = (current_value - bet.entry_price) / bet.entry_price
         assert pnl_pct >= config.SIM_TAKE_PROFIT
 
@@ -75,8 +75,8 @@ class TestTrailingStopTiers:
         """Simulate the full stop-level computation from update_positions."""
         entry = 0.50
 
-        # Scenario 1: peak at 0.55 (10% gain) → normal stop
-        peak = 0.55
+        # Scenario 1: peak at 0.52 (4% gain) → normal stop
+        peak = 0.52
         peak_gain_pct = (peak - entry) / entry
         if peak_gain_pct >= config.SIM_TRAILING_PROFIT_TRIGGER:
             stop = entry * (1 + config.SIM_TRAILING_PROFIT_LOCK)
@@ -84,10 +84,10 @@ class TestTrailingStopTiers:
             stop = entry
         else:
             stop = entry * (1 - config.SIM_STOP_LOSS)
-        assert stop == pytest.approx(0.375, abs=0.001)
+        assert stop == pytest.approx(0.425, abs=0.001)
 
-        # Scenario 2: peak at 0.62 (24% gain) → breakeven stop
-        peak = 0.62
+        # Scenario 2: peak at 0.60 (20% gain) → breakeven stop
+        peak = 0.60
         peak_gain_pct = (peak - entry) / entry
         if peak_gain_pct >= config.SIM_TRAILING_PROFIT_TRIGGER:
             stop = entry * (1 + config.SIM_TRAILING_PROFIT_LOCK)
@@ -372,10 +372,10 @@ class TestConfigDefaults:
     """Verify new config flags have correct defaults."""
 
     def test_trailing_breakeven_trigger(self):
-        assert config.SIM_TRAILING_BREAKEVEN_TRIGGER == 0.20
+        assert config.SIM_TRAILING_BREAKEVEN_TRIGGER == 0.15
 
     def test_trailing_profit_trigger(self):
-        assert config.SIM_TRAILING_PROFIT_TRIGGER == 0.35
+        assert config.SIM_TRAILING_PROFIT_TRIGGER == 0.25
 
     def test_trailing_profit_lock(self):
         assert config.SIM_TRAILING_PROFIT_LOCK == 0.15

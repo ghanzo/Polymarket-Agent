@@ -12,11 +12,12 @@ Usage:
 import argparse
 import json
 import logging
+import math
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 
-from src.cli import PolymarketCLI, CLIError
+from src.api import PolymarketAPI, APIError
 from src.config import config
 from src.models import Market, Recommendation, Side
 from src.analyzer import get_individual_analyzers, Analyzer, _build_web_context
@@ -24,6 +25,99 @@ from src import db
 
 logger = logging.getLogger("backtester")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
+
+
+@dataclass
+class RiskMetrics:
+    """Risk-adjusted performance metrics for a backtest."""
+    sharpe_ratio: float = 0.0
+    sortino_ratio: float = 0.0
+    max_drawdown: float = 0.0
+    calmar_ratio: float = 0.0
+    win_rate: float = 0.0
+    avg_win: float = 0.0
+    avg_loss: float = 0.0
+    profit_factor: float = 0.0
+    total_return: float = 0.0
+    annualized_return: float = 0.0
+    num_trades: int = 0
+
+
+def compute_risk_metrics(pnl_series: list[float], trading_days: int = 30) -> RiskMetrics:
+    """Compute risk-adjusted metrics from a series of per-trade PnL values.
+
+    Args:
+        pnl_series: List of per-trade PnL values (positive = win, negative = loss).
+        trading_days: Number of calendar days the backtest spans.
+
+    Returns:
+        RiskMetrics with all computed values.
+    """
+    if not pnl_series:
+        return RiskMetrics()
+
+    n = len(pnl_series)
+    wins = [p for p in pnl_series if p > 0]
+    losses = [p for p in pnl_series if p <= 0]
+
+    total_return = sum(pnl_series)
+    win_rate = len(wins) / n if n > 0 else 0.0
+    avg_win = sum(wins) / len(wins) if wins else 0.0
+    avg_loss = sum(losses) / len(losses) if losses else 0.0
+
+    # Gross wins / gross losses
+    gross_wins = sum(wins) if wins else 0.0
+    gross_losses = abs(sum(losses)) if losses else 0.0
+    profit_factor = gross_wins / gross_losses if gross_losses > 0 else (float("inf") if gross_wins > 0 else 0.0)
+
+    # Annualized return
+    annualized_return = (total_return / max(trading_days, 1)) * 365
+
+    # Mean and std dev of returns
+    mean_return = total_return / n
+    variance = sum((p - mean_return) ** 2 for p in pnl_series) / n if n > 0 else 0.0
+    std_dev = math.sqrt(variance)
+
+    # Sharpe ratio (annualized, assuming daily trades)
+    # Scale factor: sqrt(trades_per_year) ≈ sqrt(365 * n / trading_days)
+    trades_per_year = (n / max(trading_days, 1)) * 365
+    scale = math.sqrt(trades_per_year) if trades_per_year > 0 else 1.0
+    sharpe_ratio = (mean_return / std_dev * scale) if std_dev > 0 else 0.0
+
+    # Sortino ratio (only downside deviation)
+    downside_returns = [min(p - mean_return, 0) for p in pnl_series]
+    downside_var = sum(d ** 2 for d in downside_returns) / n if n > 0 else 0.0
+    downside_dev = math.sqrt(downside_var)
+    sortino_ratio = (mean_return / downside_dev * scale) if downside_dev > 0 else 0.0
+
+    # Max drawdown on cumulative PnL curve
+    cumulative = 0.0
+    peak = 0.0
+    max_drawdown = 0.0
+    for pnl in pnl_series:
+        cumulative += pnl
+        if cumulative > peak:
+            peak = cumulative
+        dd = peak - cumulative
+        if dd > max_drawdown:
+            max_drawdown = dd
+
+    # Calmar ratio: annualized return / max drawdown
+    calmar_ratio = annualized_return / max_drawdown if max_drawdown > 0 else 0.0
+
+    return RiskMetrics(
+        sharpe_ratio=round(sharpe_ratio, 3),
+        sortino_ratio=round(sortino_ratio, 3),
+        max_drawdown=round(max_drawdown, 2),
+        calmar_ratio=round(calmar_ratio, 3),
+        win_rate=round(win_rate, 3),
+        avg_win=round(avg_win, 2),
+        avg_loss=round(avg_loss, 2),
+        profit_factor=round(profit_factor, 3) if profit_factor != float("inf") else float("inf"),
+        total_return=round(total_return, 2),
+        annualized_return=round(annualized_return, 2),
+        num_trades=n,
+    )
 
 
 @dataclass
@@ -56,6 +150,7 @@ class BacktestSummary:
     brier_score_sum: float = 0.0  # Sum of (estimated_prob - outcome)^2
     brier_count: int = 0
     results: list[BacktestResult] = field(default_factory=list)
+    risk_metrics: RiskMetrics | None = None
 
     @property
     def accuracy(self) -> float:
@@ -123,7 +218,7 @@ _BACKTEST_SEARCH_QUERIES = [
 ]
 
 
-def fetch_resolved_markets(cli: PolymarketCLI, days: int = 30, max_markets: int = 50) -> list[dict]:
+def fetch_resolved_markets(cli: PolymarketAPI, days: int = 30, max_markets: int = 50) -> list[dict]:
     """Fetch recently resolved markets from Polymarket.
 
     Uses `markets search` with diverse queries since `markets list --active false`
@@ -158,14 +253,14 @@ def fetch_resolved_markets(cli: PolymarketCLI, days: int = 30, max_markets: int 
 
                 if len(resolved) >= max_markets:
                     break
-        except CLIError as e:
+        except APIError as e:
             logger.warning("CLI error searching '%s': %s", query, e)
 
     logger.info("Found %d resolved markets", len(resolved))
     return resolved
 
 
-def get_historical_midpoint(cli: PolymarketCLI, token_id: str) -> float | None:
+def get_historical_midpoint(cli: PolymarketAPI, token_id: str) -> float | None:
     """Try to get a pre-resolution price for a market.
 
     For closed markets the live midpoint won't work, so we use price history.
@@ -184,7 +279,7 @@ def get_historical_midpoint(cli: PolymarketCLI, token_id: str) -> float | None:
             price = float(point.get("p", 0))
             if 0.01 < price < 0.99:
                 return price
-    except (CLIError, ValueError, TypeError, IndexError):
+    except (APIError, ValueError, TypeError, IndexError):
         pass
     return None
 
@@ -198,7 +293,7 @@ def run_backtest(
 
     Returns a dict of trader_id -> BacktestSummary.
     """
-    cli = PolymarketCLI()
+    cli = PolymarketAPI()
     print("=" * 60)
     print("  POLYMARKET HISTORICAL BACKTESTER")
     print("=" * 60)
@@ -282,15 +377,21 @@ def run_backtest(
 
                     # Was the prediction correct?
                     assumed_spread = config.BACKTEST_ASSUMED_SPREAD
-                    half_spread = assumed_spread / 2.0
                     if analysis.recommendation == Recommendation.BUY_YES:
                         was_correct = yes_won
                         side = Side.YES
-                        entry_price = hist_mid + half_spread
                     else:
                         was_correct = not yes_won
                         side = Side.NO
-                        entry_price = (1.0 - hist_mid) + half_spread
+
+                    from src.slippage import apply_slippage
+                    entry_price, _ = apply_slippage(
+                        midpoint=hist_mid,
+                        spread=assumed_spread,
+                        side=side.value,
+                        amount=0,  # No book in backtest
+                        order_book=None,
+                    )
 
                     if was_correct:
                         summary.correct += 1
@@ -314,6 +415,9 @@ def run_backtest(
                         shares = bet_amount / entry_price
                         payout = shares * 1.0 if was_correct else 0.0
                         pnl = payout - bet_amount
+                        # Apply Polymarket fee on profits
+                        if pnl > 0:
+                            pnl -= pnl * config.BACKTEST_FEE_RATE
                     else:
                         pnl = 0.0
 
@@ -371,7 +475,21 @@ def run_backtest(
     print(f"\n  Brier score: 0.0 = perfect, 0.25 = random coin flip")
     print(f"  Markets tested: {len(test_markets)}")
 
-    # 6. Compute calibration curves from results
+    # 6. Compute risk-adjusted metrics per model
+    print("\n  " + "-" * 56)
+    print(f"  {'Model':<12} {'Sharpe':>8} {'Sortino':>8} {'MaxDD':>8} {'Calmar':>8} {'PF':>8}")
+    print("  " + "-" * 56)
+    for tid, s in sorted(summaries.items(), key=lambda x: x[1].total_theoretical_pnl, reverse=True):
+        pnl_series = [r.theoretical_pnl for r in s.results if r.theoretical_pnl != 0.0]
+        rm = compute_risk_metrics(pnl_series, trading_days=days)
+        s.risk_metrics = rm
+        pf_str = f"{rm.profit_factor:>8.2f}" if rm.profit_factor != float("inf") else "     inf"
+        print(f"  {tid:<12} {rm.sharpe_ratio:>8.2f} {rm.sortino_ratio:>8.2f} "
+              f"${rm.max_drawdown:>7.2f} {rm.calmar_ratio:>8.2f} {pf_str}")
+    print("  " + "-" * 56)
+    print(f"  Sharpe/Sortino: >1 good, >2 great | PF: >1.5 profitable")
+
+    # 7. Compute calibration curves from results
     compute_calibration(summaries)
 
     return summaries

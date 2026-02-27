@@ -1,16 +1,19 @@
 import json
+import logging
 from datetime import datetime, timezone
 
-from src.cli import PolymarketCLI, CLIError
+from src.api import PolymarketAPI, APIError
 from src.config import config
 from src.models import Analysis, Bet, BetStatus, Market, Recommendation, Side, kelly_size
 from src import db
+
+logger = logging.getLogger("simulator")
 
 
 class Simulator:
     """Paper trading engine for a single trader."""
 
-    def __init__(self, cli: PolymarketCLI, trader_id: str):
+    def __init__(self, cli: PolymarketAPI, trader_id: str):
         self.cli = cli
         self.trader_id = trader_id
 
@@ -32,20 +35,33 @@ class Simulator:
                 return None
 
         portfolio = db.get_portfolio(self.trader_id)
-        midpoint = market.midpoint or 0.5
-        half_spread = (market.spread or 0.0) / 2.0
 
-        # Determine side and entry price (at ask, not midpoint)
+        # Portfolio-level max drawdown check
+        drawdown_floor = config.SIM_STARTING_BALANCE * (1 - config.SIM_MAX_DRAWDOWN)
+        if portfolio.balance < drawdown_floor:
+            logger.warning("Max drawdown reached (%.0f%%), pausing trading for %s",
+                           config.SIM_MAX_DRAWDOWN * 100, self.trader_id)
+            return None
+
+        # Daily loss limit check
+        daily_pnl = db.get_daily_realized_pnl(self.trader_id)
+        daily_loss_limit = config.SIM_STARTING_BALANCE * config.SIM_MAX_DAILY_LOSS
+        if daily_pnl < -daily_loss_limit:
+            logger.warning("Daily loss limit reached ($%.2f), pausing %s",
+                           abs(daily_pnl), self.trader_id)
+            return None
+        midpoint = market.midpoint or 0.5
+        spread = market.spread or 0.0
+
+        # Determine side and token
         if analysis.recommendation == Recommendation.BUY_YES:
             side = Side.YES
             token_id = market.token_ids[0] if market.token_ids else ""
-            entry_price = midpoint + half_spread
         else:
             side = Side.NO
             token_id = market.token_ids[1] if len(market.token_ids) > 1 else ""
-            entry_price = (1.0 - midpoint) + half_spread
 
-        if not token_id or entry_price <= 0.001:
+        if not token_id:
             return None
 
         # Apply calibration adjustment if available
@@ -54,6 +70,28 @@ class Simulator:
             est_prob = db.calibrate_probability(
                 self.trader_id, est_prob, min_samples=config.MIN_CALIBRATION_SAMPLES
             )
+
+        # Longshot bias correction (Snowberg & Wolfers 2010)
+        # LLMs overestimate longshots and underestimate favorites
+        if config.SIM_LONGSHOT_BIAS_ENABLED:
+            if midpoint < config.SIM_LONGSHOT_LOW_THRESHOLD:
+                # Longshots overpriced — shrink our estimate toward 0
+                est_prob = est_prob * (1 - config.SIM_LONGSHOT_ADJUSTMENT)
+            elif midpoint > config.SIM_LONGSHOT_HIGH_THRESHOLD:
+                # Favorites underpriced — push our estimate toward 1
+                est_prob = est_prob + (1 - est_prob) * config.SIM_LONGSHOT_ADJUSTMENT
+
+        # Strategy signal adjustment
+        try:
+            from src.strategies import compute_all_signals, aggregate_confidence_adjustment
+            signals = compute_all_signals(market)
+            if signals:
+                adj = aggregate_confidence_adjustment(signals, side.value)
+                est_prob = max(0.01, min(0.99, est_prob + adj))
+                logger.debug("Strategy signals for %s: %s, adj=%.3f",
+                             market.question[:30], [s.name for s in signals], adj)
+        except Exception:
+            pass
 
         # Reject if edge too small
         edge = abs(est_prob - midpoint)
@@ -68,13 +106,30 @@ class Simulator:
             bankroll=portfolio.balance,
             max_bet_pct=config.SIM_MAX_BET_PCT,
             fraction=config.SIM_KELLY_FRACTION,
-            spread=market.spread or 0.0,
+            spread=spread,
         )
 
         # Minimum $1 bet, cap at balance
         if bet_amount < 1.0:
             return None
         bet_amount = min(bet_amount, portfolio.balance)
+
+        # Compute slippage-adjusted entry price
+        from src.slippage import apply_slippage
+        entry_price, slippage_bps = apply_slippage(
+            midpoint=midpoint,
+            spread=spread,
+            side=side.value,
+            amount=bet_amount,
+            order_book=market.order_book,
+        )
+        if entry_price <= 0.001:
+            return None
+        # Reject trades with excessive slippage
+        if slippage_bps > config.MAX_SLIPPAGE_BPS:
+            logger.info("Slippage too high (%.0f bps > %d max) for %s, skipping",
+                        slippage_bps, config.MAX_SLIPPAGE_BPS, market.question[:40])
+            return None
 
         shares = bet_amount / entry_price
 
@@ -89,6 +144,8 @@ class Simulator:
             shares=shares,
             token_id=token_id,
             event_id=market.event_id,
+            category=analysis.category,
+            confidence=analysis.confidence,
         )
 
         bet.id = db.save_bet(bet)
@@ -113,8 +170,9 @@ class Simulator:
                         bet.peak_price = current_value
                         db.update_bet_peak_price(bet.id, current_value)
 
-                    # Compute dynamic stop level based on peak
+                    # Compute dynamic stop level based on peak and confidence tier
                     if bet.entry_price > 0:
+                        stop_pct, tp_pct = self._get_risk_params(bet.confidence)
                         peak_gain_pct = (bet.peak_price - bet.entry_price) / bet.entry_price
                         pnl_pct = (current_value - bet.entry_price) / bet.entry_price
 
@@ -125,17 +183,17 @@ class Simulator:
                             min_stop = bet.entry_price * (1 + config.SIM_TRAILING_PROFIT_LOCK)
                             stop_level = max(trailing_stop, min_stop)
                         elif peak_gain_pct >= config.SIM_TRAILING_BREAKEVEN_TRIGGER:
-                            # Position reached +20% at some point — stop at breakeven
+                            # Position reached +15% at some point — stop at breakeven
                             stop_level = bet.entry_price
                         else:
-                            # Normal stop-loss
-                            stop_level = bet.entry_price * (1 - config.SIM_STOP_LOSS)
+                            # Confidence-tiered stop-loss
+                            stop_level = bet.entry_price * (1 - stop_pct)
 
                         # Check exits
                         if current_value <= stop_level:
                             db.close_bet(bet.id, current_value)
                             continue
-                        if pnl_pct >= config.SIM_TAKE_PROFIT:
+                        if pnl_pct >= tp_pct:
                             db.close_bet(bet.id, current_value)
                             continue
 
@@ -148,9 +206,23 @@ class Simulator:
                             if movement < config.SIM_STALE_THRESHOLD:
                                 db.close_bet(bet.id, current_value)
                                 continue
-            except (CLIError, ValueError, TypeError):
+            except (APIError, ValueError, TypeError):
                 pass
         return open_bets
+
+    @staticmethod
+    def _get_risk_params(confidence: float) -> tuple[float, float]:
+        """Return (stop_loss_pct, take_profit_pct) based on confidence tier.
+
+        High confidence → tighter stops (more conviction, less room needed).
+        Low confidence → wider stops (less conviction, need more room).
+        """
+        if confidence >= config.SIM_CONFIDENCE_HIGH_THRESHOLD:
+            return config.SIM_STOP_LOSS_HIGH_CONF, config.SIM_TAKE_PROFIT_HIGH_CONF
+        elif confidence >= config.SIM_CONFIDENCE_MED_THRESHOLD:
+            return config.SIM_STOP_LOSS_MED_CONF, config.SIM_TAKE_PROFIT_MED_CONF
+        else:
+            return config.SIM_STOP_LOSS_LOW_CONF, config.SIM_TAKE_PROFIT_LOW_CONF
 
     def check_resolutions(self) -> list[Bet]:
         """Check if any markets with open bets have closed."""
@@ -179,7 +251,7 @@ class Simulator:
                     db.resolve_bet(bet.id, won, exit_price)
                     bet.status = BetStatus.WON if won else BetStatus.LOST
                     resolved.append(bet)
-            except (CLIError, ValueError, TypeError, IndexError):
+            except (APIError, ValueError, TypeError, IndexError):
                 continue
 
         if resolved:

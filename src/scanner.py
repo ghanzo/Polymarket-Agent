@@ -1,6 +1,9 @@
+import json
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-from src.cli import PolymarketCLI, CLIError
+from src.api import PolymarketAPI, APIError
 from src.config import config
 from src.models import Market
 
@@ -8,7 +11,7 @@ from src.models import Market
 class MarketScanner:
     """Scans ALL active Polymarket markets and ranks by opportunity quality."""
 
-    def __init__(self, cli: PolymarketCLI):
+    def __init__(self, cli: PolymarketAPI):
         self.cli = cli
 
     def scan(self, max_markets: int = 30) -> list[Market]:
@@ -25,24 +28,40 @@ class MarketScanner:
                     break
                 for m in page:
                     market = Market.from_cli(m)
+                    # Extract midpoint from outcomePrices (already in Gamma response)
+                    outcome_prices = m.get("outcomePrices")
+                    if outcome_prices:
+                        prices = json.loads(outcome_prices) if isinstance(outcome_prices, str) else outcome_prices
+                        if prices:
+                            try:
+                                market.midpoint = float(prices[0])
+                            except (ValueError, TypeError):
+                                pass
+                    # Extract metadata that enrichment would have fetched separately
+                    market.created_at = m.get("createdAt") or m.get("created_at")
+                    event_id = m.get("eventSlug") or m.get("event_id") or m.get("eventId")
+                    if event_id:
+                        market.event_id = str(event_id)
                     if self._passes_filter(market):
                         raw_markets.append(market)
                 offset += page_size
                 # Safety cap: don't scan forever
-                if offset >= 500:
+                if offset >= config.SIM_SCAN_DEPTH:
                     break
-            except CLIError:
+            except APIError:
                 break
 
-        # Enrich with live pricing, then score (so spread is available for scoring)
+        # Enrich with live pricing concurrently, then score
         enriched = []
-        for market in raw_markets:
-            market = self._enrich(market)
-            if market.midpoint is not None and 0.01 < market.midpoint < 0.99:
-                # Reject markets with spreads too wide to trade profitably
-                if market.spread is not None and market.spread > config.SIM_MAX_SPREAD:
-                    continue
-                enriched.append(market)
+        with ThreadPoolExecutor(max_workers=config.SIM_ENRICH_WORKERS) as pool:
+            futures = {pool.submit(self._enrich, m): m for m in raw_markets}
+            for future in as_completed(futures):
+                market = future.result()
+                if market.midpoint is not None and 0.01 < market.midpoint < 0.99:
+                    # Reject markets with spreads too wide to trade profitably
+                    if market.spread is not None and market.spread > config.SIM_MAX_SPREAD:
+                        continue
+                    enriched.append(market)
 
         # Score and sort based on scan mode
         mode = config.SIM_SCAN_MODE
@@ -249,21 +268,27 @@ class MarketScanner:
         return score
 
     def _enrich(self, market: Market) -> Market:
-        """Add live pricing and price history to a market."""
+        """Add live pricing and price history to a market.
+
+        Skips calls for data already extracted from the Gamma listing response
+        (midpoint from outcomePrices, created_at, event_id).
+        """
         if not market.token_ids:
             return market
         token = market.token_ids[0]
 
-        try:
-            mid = self.cli.clob_midpoint(token)
-            market.midpoint = float(mid.get("midpoint", 0))
-        except (CLIError, ValueError, TypeError):
-            pass
+        # Midpoint: skip if already extracted from Gamma listing
+        if market.midpoint is None:
+            try:
+                mid = self.cli.clob_midpoint(token)
+                market.midpoint = float(mid.get("midpoint", 0))
+            except (APIError, ValueError, TypeError):
+                pass
 
         try:
             spread = self.cli.clob_spread(token)
             market.spread = float(spread.get("spread", 0))
-        except (CLIError, ValueError, TypeError):
+        except (APIError, ValueError, TypeError):
             pass
 
         try:
@@ -272,47 +297,52 @@ class MarketScanner:
                 bids = book.get("bids", [])
                 asks = book.get("asks", [])
                 market.order_book = {"bids": bids[:5], "asks": asks[:5]}
-        except (CLIError, ValueError, TypeError):
+        except (APIError, ValueError, TypeError):
             pass
 
         try:
             history = self.cli.price_history(token, interval="1d")
             if isinstance(history, list):
                 market.price_history = history[-7:]  # Last 7 data points
-        except (CLIError, ValueError, TypeError):
+        except (APIError, ValueError, TypeError):
             pass
 
         # Event context enrichment (best-effort)
+        # Skip markets_get() if metadata already extracted from listing
         if config.USE_EVENT_CONTEXT:
-            try:
-                detail = self.cli.markets_get(market.id)
-                if isinstance(detail, dict):
-                    market.created_at = detail.get("createdAt") or detail.get("created_at")
-                    event_id = detail.get("eventId") or detail.get("event_id")
-                    if event_id:
-                        market.event_id = str(event_id)
-                        try:
-                            event = self.cli.events_get(event_id)
-                            if isinstance(event, dict):
-                                market.event_title = event.get("title") or event.get("name")
-                                raw_markets = event.get("markets", [])
-                                related = []
-                                for rm in raw_markets:
-                                    rm_id = str(rm.get("id", ""))
-                                    if rm_id == market.id:
-                                        continue
-                                    related.append({
-                                        "question": rm.get("question", ""),
-                                        "midpoint": rm.get("midpoint"),
-                                        "volume": rm.get("volume", "0"),
-                                    })
-                                    if len(related) >= 5:
-                                        break
-                                if related:
-                                    market.related_markets = related
-                        except (CLIError, ValueError, TypeError):
-                            pass
-            except (CLIError, ValueError, TypeError):
-                pass
+            if not market.created_at:
+                try:
+                    detail = self.cli.markets_get(market.id)
+                    if isinstance(detail, dict):
+                        market.created_at = detail.get("createdAt") or detail.get("created_at")
+                        if not market.event_id:
+                            event_id = detail.get("eventId") or detail.get("event_id")
+                            if event_id:
+                                market.event_id = str(event_id)
+                except (APIError, ValueError, TypeError):
+                    pass
+
+            if market.event_id and not market.event_title:
+                try:
+                    event = self.cli.events_get(market.event_id)
+                    if isinstance(event, dict):
+                        market.event_title = event.get("title") or event.get("name")
+                        raw_markets = event.get("markets", [])
+                        related = []
+                        for rm in raw_markets:
+                            rm_id = str(rm.get("id", ""))
+                            if rm_id == market.id:
+                                continue
+                            related.append({
+                                "question": rm.get("question", ""),
+                                "midpoint": rm.get("midpoint"),
+                                "volume": rm.get("volume", "0"),
+                            })
+                            if len(related) >= 5:
+                                break
+                        if related:
+                            market.related_markets = related
+                except (APIError, ValueError, TypeError):
+                    pass
 
         return market

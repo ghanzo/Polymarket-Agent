@@ -111,6 +111,13 @@ def init_db():
             # Schema migrations (idempotent)
             cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS event_id TEXT;")
             cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS peak_price DOUBLE PRECISION;")
+            cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS category TEXT;")
+            cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION DEFAULT 0.0;")
+            cur.execute("ALTER TABLE analysis_log ADD COLUMN IF NOT EXISTS category TEXT;")
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_analysis_log_cooldown
+                    ON analysis_log (trader_id, market_id, created_at DESC);
+            """)
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS search_cache (
@@ -172,6 +179,40 @@ def init_db():
                     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
                 );
             """)
+            # Data integrity constraints (idempotent)
+            for stmt in [
+                "ALTER TABLE bets ADD CONSTRAINT IF NOT EXISTS chk_amount_positive CHECK (amount > 0)",
+                "ALTER TABLE bets ADD CONSTRAINT IF NOT EXISTS chk_price_range CHECK (entry_price BETWEEN 0 AND 1)",
+                "ALTER TABLE bets ADD CONSTRAINT IF NOT EXISTS chk_shares_positive CHECK (shares > 0)",
+                "ALTER TABLE portfolio ADD CONSTRAINT IF NOT EXISTS chk_balance_non_negative CHECK (balance >= 0)",
+                "ALTER TABLE analysis_log ADD CONSTRAINT IF NOT EXISTS chk_confidence_range CHECK (confidence BETWEEN 0 AND 1)",
+                "ALTER TABLE analysis_log ADD CONSTRAINT IF NOT EXISTS chk_est_prob_range CHECK (estimated_probability BETWEEN 0 AND 1)",
+            ]:
+                try:
+                    cur.execute(stmt)
+                except Exception:
+                    conn.rollback()  # Constraint may already exist in older PG syntax
+
+            # Foreign keys (idempotent — skip if exists)
+            for stmt in [
+                """DO $$ BEGIN
+                    ALTER TABLE bets ADD CONSTRAINT fk_bets_portfolio
+                        FOREIGN KEY (trader_id) REFERENCES portfolio(trader_id);
+                EXCEPTION WHEN duplicate_object THEN NULL;
+                END $$""",
+                """DO $$ BEGIN
+                    ALTER TABLE portfolio_snapshots ADD CONSTRAINT fk_snapshots_portfolio
+                        FOREIGN KEY (trader_id) REFERENCES portfolio(trader_id);
+                EXCEPTION WHEN duplicate_object THEN NULL;
+                END $$""",
+                """DO $$ BEGIN
+                    ALTER TABLE performance_reviews ADD CONSTRAINT fk_reviews_portfolio
+                        FOREIGN KEY (trader_id) REFERENCES portfolio(trader_id);
+                EXCEPTION WHEN duplicate_object THEN NULL;
+                END $$""",
+            ]:
+                cur.execute(stmt)
+
             # Initialize portfolios for each trader
             for tid in TRADER_IDS:
                 cur.execute(
@@ -274,13 +315,14 @@ def save_bet(bet: Bet) -> int:
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO bets (trader_id, market_id, market_question, side, amount, entry_price,
-                                      shares, token_id, status, placed_at, event_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                      shares, token_id, status, placed_at, event_id, category, confidence)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """, (
                     bet.trader_id, bet.market_id, bet.market_question, bet.side.value,
                     bet.amount, bet.entry_price, bet.shares, bet.token_id,
-                    bet.status.value, bet.placed_at, bet.event_id,
+                    bet.status.value, bet.placed_at, bet.event_id, bet.category,
+                    bet.confidence,
                 ))
                 result = cur.fetchone()
                 if not result:
@@ -322,6 +364,9 @@ def resolve_bet(bet_id: int, won: bool, exit_price: float):
                 cost = row["amount"]
                 payout = shares * 1.0 if won else 0.0
                 pnl = payout - cost
+                # Apply fee on profits (Polymarket charges ~2% on winnings)
+                if pnl > 0:
+                    pnl -= pnl * config.SIM_FEE_RATE
                 status = BetStatus.WON if won else BetStatus.LOST
 
                 cur.execute("""
@@ -360,6 +405,9 @@ def close_bet(bet_id: int, exit_price: float):
                 cost = row["amount"]
                 payout = shares * exit_price
                 pnl = payout - cost
+                # Apply fee on profits (Polymarket charges ~2% on winnings)
+                if pnl > 0:
+                    pnl -= pnl * config.SIM_FEE_RATE
                 won = pnl > 0
                 cur.execute("""
                     UPDATE bets SET status=%s, exit_price=%s, pnl=%s, resolved_at=%s
@@ -409,16 +457,33 @@ def get_analysis_for_bet(trader_id: str, market_id: str) -> dict | None:
 
 
 def save_analysis(trader_id: str, market_id: str, model: str, recommendation: str,
-                  confidence: float, estimated_probability: float, reasoning: str):
+                  confidence: float, estimated_probability: float, reasoning: str,
+                  category: str = "general"):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO analysis_log (trader_id, market_id, model, recommendation,
-                                          confidence, estimated_probability, reasoning)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                          confidence, estimated_probability, reasoning, category)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """, (trader_id, market_id, model, recommendation, confidence,
-                  estimated_probability, reasoning))
+                  estimated_probability, reasoning, category))
         conn.commit()
+
+
+def is_analysis_on_cooldown(trader_id: str, market_id: str, cooldown_hours: float) -> bool:
+    """Return True if market was analyzed within cooldown_hours."""
+    if cooldown_hours <= 0:
+        return False
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM analysis_log "
+                "WHERE trader_id = %s AND market_id = %s "
+                "AND created_at > NOW() - make_interval(hours := %s) "
+                "LIMIT 1",
+                (trader_id, market_id, cooldown_hours),
+            )
+            return cur.fetchone() is not None
 
 
 def has_open_bet_on_market(market_id: str, trader_id: str) -> bool:
@@ -686,6 +751,50 @@ def get_performance_history(trader_id: str, limit: int = 50) -> list[dict]:
             return [dict(r) for r in cur.fetchall()]
 
 
+def get_category_performance(trader_id: str) -> list[dict]:
+    """Return accuracy, avg PnL, and count per category for resolved bets."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    COALESCE(category, 'general') AS category,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                    AVG(pnl) AS avg_pnl,
+                    SUM(pnl) AS total_pnl
+                FROM bets
+                WHERE trader_id = %s AND status != 'OPEN'
+                GROUP BY COALESCE(category, 'general')
+                ORDER BY COUNT(*) DESC
+            """, (trader_id,))
+            rows = cur.fetchall()
+            results = []
+            for r in rows:
+                total = r["total"]
+                wins = r["wins"]
+                results.append({
+                    "category": r["category"],
+                    "total": total,
+                    "wins": wins,
+                    "accuracy": wins / total if total > 0 else 0.0,
+                    "avg_pnl": float(r["avg_pnl"]) if r["avg_pnl"] else 0.0,
+                    "total_pnl": float(r["total_pnl"]) if r["total_pnl"] else 0.0,
+                })
+            return results
+
+
+def get_daily_realized_pnl(trader_id: str) -> float:
+    """Sum realized PnL from bets closed/resolved today."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COALESCE(SUM(pnl), 0) FROM bets "
+                "WHERE trader_id = %s AND resolved_at >= CURRENT_DATE AND status != 'OPEN'",
+                (trader_id,),
+            )
+            return float(cur.fetchone()[0])
+
+
 def _row_to_bet(row: dict) -> Bet:
     return Bet(
         id=row["id"],
@@ -705,4 +814,6 @@ def _row_to_bet(row: dict) -> Bet:
         resolved_at=row.get("resolved_at"),
         event_id=row.get("event_id"),
         peak_price=row.get("peak_price"),
+        category=row.get("category", "general"),
+        confidence=row.get("confidence", 0.0) or 0.0,
     )

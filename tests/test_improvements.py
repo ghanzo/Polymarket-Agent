@@ -66,12 +66,12 @@ class TestStopLossConfig:
     def test_default_stop_loss(self):
         from src.config import Config
         c = Config()
-        assert c.SIM_STOP_LOSS == 0.25
+        assert c.SIM_STOP_LOSS == 0.15
 
     def test_default_take_profit(self):
         from src.config import Config
         c = Config()
-        assert c.SIM_TAKE_PROFIT == 0.50
+        assert c.SIM_TAKE_PROFIT == 0.40
 
 
 # ── 2. Order Book Analysis ────────────────────────────────────────────
@@ -233,15 +233,15 @@ class TestEnsembleAggregate:
         analysis = ensemble.aggregate(self.MARKET, results)
         assert analysis.recommendation == Recommendation.SKIP
 
-    def test_aggregate_equal_weight(self):
+    def test_aggregate_confidence_weighted(self):
         ensemble = self._make_ensemble()
         results = [
             _make_analysis("m1", "a", Recommendation.BUY_YES, 0.8, 0.80),
             _make_analysis("m1", "b", Recommendation.BUY_YES, 0.4, 0.60),
         ]
         analysis = ensemble.aggregate(self.MARKET, results)
-        # Equal-weight average: (0.80 + 0.60) / 2 = 0.70
-        assert analysis.estimated_probability == pytest.approx(0.70, abs=0.01)
+        # Confidence-weighted: (0.80*0.8 + 0.60*0.4) / (0.8+0.4) ≈ 0.733
+        assert analysis.estimated_probability == pytest.approx(0.733, abs=0.01)
 
 
 # ── 5. Spread in Scanner Scoring ──────────────────────────────────────

@@ -18,7 +18,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
-from src.cli import PolymarketCLI
+from src.api import PolymarketAPI
+from src.analyzer import cost_tracker
 from src.config import config
 from src.models import TRADER_IDS
 from src import db
@@ -59,7 +60,7 @@ def _run_cycle():
     from src.simulator import Simulator  # Also used for performance reviews below
 
     config.load_runtime_overrides()
-    cli = PolymarketCLI()
+    cli = PolymarketAPI()
     scanner = MarketScanner(cli)
     paused = set(config.PAUSED_TRADERS) if hasattr(config, "PAUSED_TRADERS") else set()
 
@@ -70,9 +71,18 @@ def _run_cycle():
         _init_trader_state(tid, paused)
 
     # 1. Scan markets (shared across all traders)
-    markets = scanner.scan(max_markets=30)
+    markets = scanner.scan(max_markets=config.SIM_MAX_MARKETS)
     sim_state["markets_scanned"] = len(markets)
     logger.info("Scanned %d candidate markets", len(markets))
+
+    # 1b. ML pre-screening: filter before expensive LLM calls
+    if config.ML_PRESCREENER_ENABLED:
+        from src.prescreener import MarketPreScreener
+        prescreener = MarketPreScreener()
+        pre_count = len(markets)
+        markets = prescreener.filter(markets)
+        sim_state["markets_prescreened"] = pre_count
+        logger.info("Pre-screener: %d → %d markets", pre_count, len(markets))
 
     # 2. Get all available analyzers
     analyzers = get_individual_analyzers()
@@ -97,6 +107,9 @@ def _run_cycle():
         for market in markets:
             sim_state["traders"][tid]["current_market"] = market.question[:50]
             try:
+                # Skip if recently analyzed (cooldown)
+                if db.is_analysis_on_cooldown(tid, market.id, config.SIM_ANALYSIS_COOLDOWN_HOURS):
+                    continue
                 analysis = analyzer.analyze(market, web_contexts.get(market.id, ""))
                 results.append((market, analysis))
                 sim_state["traders"][tid]["markets_analyzed"] += 1
@@ -105,6 +118,7 @@ def _run_cycle():
                     analysis.recommendation.value,
                     analysis.confidence, analysis.estimated_probability,
                     analysis.reasoning,
+                    category=analysis.category,
                 )
             except Exception as e:
                 sim_state["traders"][tid]["errors"] += 1
@@ -152,6 +166,7 @@ def _run_cycle():
                     analysis.recommendation.value,
                     analysis.confidence, analysis.estimated_probability,
                     analysis.reasoning,
+                    category=analysis.category,
                 )
             except Exception as e:
                 sim_state["traders"]["ensemble"]["errors"] += 1
@@ -340,6 +355,16 @@ async def dashboard(request: Request):
             "scan_mode": config.SIM_SCAN_MODE,
             "max_position_days": config.SIM_MAX_POSITION_DAYS,
             "paused_traders": config.PAUSED_TRADERS,
+            "ai_budget_soft_cap": config.AI_BUDGET_SOFT_CAP,
+            "ai_budget_hard_cap": config.AI_BUDGET_HARD_CAP,
+        },
+        "ai_costs": {
+            "daily_total": round(cost_tracker.daily_total(), 4),
+            "by_model": {k: round(v, 4) for k, v in cost_tracker.daily_by_model().items()},
+            "calls": cost_tracker.daily_calls(),
+            "budget_remaining": round(max(0, config.AI_BUDGET_HARD_CAP - cost_tracker.daily_total()), 4),
+            "latency": cost_tracker.latency_stats(),
+            "cache": cost_tracker.cache_stats(),
         },
     })
 
@@ -381,6 +406,14 @@ async def api_status():
             }
             for p in portfolios
         ],
+        "ai_costs": {
+            "daily_total": round(cost_tracker.daily_total(), 4),
+            "by_model": {k: round(v, 4) for k, v in cost_tracker.daily_by_model().items()},
+            "calls": cost_tracker.daily_calls(),
+            "budget_remaining": round(max(0, config.AI_BUDGET_HARD_CAP - cost_tracker.daily_total()), 4),
+            "latency": cost_tracker.latency_stats(),
+            "cache": cost_tracker.cache_stats(),
+        },
     })
 
 
@@ -426,6 +459,13 @@ SETTINGS_VALIDATORS = {
     "SIM_MAX_SPREAD": lambda v: str(float(v)),
     "SIM_SCAN_MODE": _validate_scan_mode,
     "SIM_MAX_POSITION_DAYS": lambda v: str(int(v)),
+    "SIM_MAX_MARKETS": lambda v: str(int(v)),
+    "SIM_SCAN_DEPTH": lambda v: str(int(v)),
+    "AI_BUDGET_SOFT_CAP": lambda v: str(float(v)),
+    "AI_BUDGET_HARD_CAP": lambda v: str(float(v)),
+    "SIM_ANALYSIS_COOLDOWN_HOURS": lambda v: str(float(v)),
+    "SIM_LONGSHOT_ADJUSTMENT": lambda v: str(float(v)),
+    "ML_PRESCREENER_THRESHOLD": lambda v: str(float(v)),
 }
 ALLOWED_SETTINGS = set(SETTINGS_VALIDATORS.keys())
 

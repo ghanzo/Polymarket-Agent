@@ -1,5 +1,5 @@
 """Tests for the learning loop, performance review, inefficiency scoring,
-scan modes, stale position management, calibration fix, and arbitrage scaffold."""
+scan modes, stale position management, and calibration fix."""
 
 import pytest
 from datetime import datetime, timezone, timedelta
@@ -8,7 +8,6 @@ from unittest.mock import patch, MagicMock
 from src.models import Market, Bet, BetStatus, Side, Analysis, Recommendation
 from src.scanner import MarketScanner
 from src.config import Config
-from src.arbitrage import ArbitrageEngine, BinanceTick, PolymarketQuote
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -294,6 +293,14 @@ class TestNoTokenPricing:
         mock_config.SIM_TRAILING_BREAKEVEN_TRIGGER = 0.20
         mock_config.SIM_TRAILING_PROFIT_TRIGGER = 0.35
         mock_config.SIM_TRAILING_PROFIT_LOCK = 0.15
+        mock_config.SIM_CONFIDENCE_HIGH_THRESHOLD = 0.80
+        mock_config.SIM_CONFIDENCE_MED_THRESHOLD = 0.60
+        mock_config.SIM_STOP_LOSS_HIGH_CONF = 0.07
+        mock_config.SIM_STOP_LOSS_MED_CONF = 0.12
+        mock_config.SIM_STOP_LOSS_LOW_CONF = 0.25
+        mock_config.SIM_TAKE_PROFIT_HIGH_CONF = 0.25
+        mock_config.SIM_TAKE_PROFIT_MED_CONF = 0.35
+        mock_config.SIM_TAKE_PROFIT_LOW_CONF = 0.50
 
         # NO bet: entry at 0.05 (low-probability NO token)
         no_bet = _make_bet(
@@ -325,6 +332,14 @@ class TestNoTokenPricing:
         mock_config.SIM_TRAILING_BREAKEVEN_TRIGGER = 0.20
         mock_config.SIM_TRAILING_PROFIT_TRIGGER = 0.35
         mock_config.SIM_TRAILING_PROFIT_LOCK = 0.15
+        mock_config.SIM_CONFIDENCE_HIGH_THRESHOLD = 0.80
+        mock_config.SIM_CONFIDENCE_MED_THRESHOLD = 0.60
+        mock_config.SIM_STOP_LOSS_HIGH_CONF = 0.07
+        mock_config.SIM_STOP_LOSS_MED_CONF = 0.12
+        mock_config.SIM_STOP_LOSS_LOW_CONF = 0.25
+        mock_config.SIM_TAKE_PROFIT_HIGH_CONF = 0.25
+        mock_config.SIM_TAKE_PROFIT_MED_CONF = 0.35
+        mock_config.SIM_TAKE_PROFIT_LOW_CONF = 0.50
 
         yes_bet = _make_bet(
             side=Side.YES,
@@ -359,6 +374,14 @@ class TestStalePosition:
         mock_config.SIM_TRAILING_BREAKEVEN_TRIGGER = 0.20
         mock_config.SIM_TRAILING_PROFIT_TRIGGER = 0.35
         mock_config.SIM_TRAILING_PROFIT_LOCK = 0.15
+        mock_config.SIM_CONFIDENCE_HIGH_THRESHOLD = 0.80
+        mock_config.SIM_CONFIDENCE_MED_THRESHOLD = 0.60
+        mock_config.SIM_STOP_LOSS_HIGH_CONF = 0.07
+        mock_config.SIM_STOP_LOSS_MED_CONF = 0.12
+        mock_config.SIM_STOP_LOSS_LOW_CONF = 0.25
+        mock_config.SIM_TAKE_PROFIT_HIGH_CONF = 0.25
+        mock_config.SIM_TAKE_PROFIT_MED_CONF = 0.35
+        mock_config.SIM_TAKE_PROFIT_LOW_CONF = 0.50
 
         old_bet = _make_bet(
             placed_at=datetime.now(timezone.utc) - timedelta(days=15),
@@ -387,6 +410,14 @@ class TestStalePosition:
         mock_config.SIM_TRAILING_BREAKEVEN_TRIGGER = 0.20
         mock_config.SIM_TRAILING_PROFIT_TRIGGER = 0.35
         mock_config.SIM_TRAILING_PROFIT_LOCK = 0.15
+        mock_config.SIM_CONFIDENCE_HIGH_THRESHOLD = 0.80
+        mock_config.SIM_CONFIDENCE_MED_THRESHOLD = 0.60
+        mock_config.SIM_STOP_LOSS_HIGH_CONF = 0.07
+        mock_config.SIM_STOP_LOSS_MED_CONF = 0.12
+        mock_config.SIM_STOP_LOSS_LOW_CONF = 0.25
+        mock_config.SIM_TAKE_PROFIT_HIGH_CONF = 0.25
+        mock_config.SIM_TAKE_PROFIT_MED_CONF = 0.35
+        mock_config.SIM_TAKE_PROFIT_LOW_CONF = 0.50
 
         old_bet = _make_bet(
             placed_at=datetime.now(timezone.utc) - timedelta(days=15),
@@ -421,41 +452,6 @@ class TestCryptoFilter:
         assert scanner._passes_filter(m) is True
 
 
-# ── Arbitrage Scaffold ──────────────────────────────────────────────
-
-class TestArbitrageScaffold:
-
-    def test_engine_instantiation(self):
-        engine = ArbitrageEngine()
-        assert engine.min_edge > 0
-        assert engine.max_position > 0
-
-    def test_detect_opportunity_returns_none(self):
-        engine = ArbitrageEngine()
-        tick = BinanceTick(price=60000.0, timestamp_ms=1000)
-        quote = PolymarketQuote(
-            market_id="m1", token_id="t1",
-            midpoint=0.50, spread=0.02, timestamp_ms=1000,
-        )
-        assert engine.detect_opportunity(tick, quote) is None
-
-    def test_find_btc_markets_returns_empty(self):
-        engine = ArbitrageEngine()
-        assert engine.find_btc_markets() == []
-
-    def test_run_raises_not_implemented(self):
-        import asyncio
-        engine = ArbitrageEngine()
-        with pytest.raises(NotImplementedError):
-            asyncio.run(engine.run())
-
-    def test_binance_feed_raises_not_implemented(self):
-        import asyncio
-        engine = ArbitrageEngine()
-        with pytest.raises(NotImplementedError):
-            asyncio.run(engine.start_binance_feed())
-
-
 # ── Config Flags ────────────────────────────────────────────────────
 
 class TestConfigFlags:
@@ -473,7 +469,3 @@ class TestConfigFlags:
         c = Config()
         assert c.FILTER_CRYPTO_NOISE is True
 
-    def test_arbitrage_disabled_by_default(self):
-        c = Config()
-        assert c.ARB_ENABLED is False
-        assert c.ARB_MIN_EDGE == 0.005

@@ -49,7 +49,7 @@ class Market:
     created_at: str | None = None
 
     @classmethod
-    def from_cli(cls, data: dict) -> Market:
+    def from_api(cls, data: dict) -> Market:
         outcomes_raw = data.get("outcomes", "[]")
         outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else (outcomes_raw or [])
         tokens_raw = data.get("clobTokenIds", "[]")
@@ -66,6 +66,11 @@ class Market:
             liquidity=data.get("liquidity", "0") or "0",
         )
 
+    @classmethod
+    def from_cli(cls, data: dict) -> Market:
+        """Backward-compatible alias for from_api."""
+        return cls.from_api(data)
+
 
 @dataclass
 class Analysis:
@@ -77,6 +82,7 @@ class Analysis:
     estimated_probability: float
     reasoning: str
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    category: str = "general"
 
 
 @dataclass
@@ -99,6 +105,8 @@ class Bet:
     resolved_at: datetime | None = None
     event_id: str | None = None
     peak_price: float | None = None
+    category: str = "general"
+    confidence: float = 0.0
 
     @property
     def unrealized_pnl(self) -> float:

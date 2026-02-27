@@ -89,7 +89,7 @@ class TestTrailingStop:
         from src.config import config
 
         entry = 0.50
-        # Simulate peak at 0.80 (60% gain > 35% trigger)
+        # Simulate peak at 0.80 (60% gain > 25% trigger)
         peak = 0.80
 
         # Old behavior: stop_level = entry * (1 + LOCK) = 0.50 * 1.15 = 0.575
@@ -107,7 +107,7 @@ class TestTrailingStop:
         from src.config import config
 
         entry = 0.50
-        # Peak just barely above trigger: 0.50 * 1.35 = 0.675
+        # Peak just barely above trigger: 0.50 * 1.25 = 0.625
         peak = entry * (1 + config.SIM_TRAILING_PROFIT_TRIGGER)
 
         trailing_stop = peak * (1 - config.SIM_TRAILING_PROFIT_LOCK)
@@ -135,7 +135,7 @@ class TestTrailingStop:
 # --- Ensemble equal-weight probability ---
 
 class TestEnsembleAggregation:
-    """Ensemble should use equal-weight probability average, not confidence-weighted."""
+    """Ensemble should use confidence-weighted probability average."""
 
     def _make_analysis(self, model, rec, prob, conf, reasoning="test"):
         return Analysis(
@@ -146,13 +146,14 @@ class TestEnsembleAggregation:
         )
 
     @patch("src.analyzer.config")
-    def test_equal_weight_not_confidence_weighted(self, mock_config):
-        """Two voters with different confidence should average probability equally."""
+    def test_confidence_weighted_probability(self, mock_config):
+        """Two voters with different confidence should weight probability by confidence."""
         from src.analyzer import EnsembleAnalyzer
         from src.models import Market
 
         mock_config.SIM_ENSEMBLE_MIN_CONFIDENCE = 0.6
         mock_config.USE_DEBATE_MODE = False
+        mock_config.USE_MARKET_SPECIALIZATION = True
 
         market = Market(
             id="m1", question="Test?", description="", outcomes=["Yes", "No"],
@@ -167,9 +168,8 @@ class TestEnsembleAggregation:
         ensemble = EnsembleAnalyzer([])
         analysis = ensemble._aggregate_results(market, results)
 
-        # Equal-weight average: (0.70 + 0.50) / 2 = 0.60
-        # Confidence-weighted would be: (0.70*0.9 + 0.50*0.1) / 1.0 = 0.68
-        assert analysis.estimated_probability == pytest.approx(0.60, abs=0.01)
+        # Confidence-weighted: (0.70*0.9 + 0.50*0.1) / (0.9+0.1) = 0.68
+        assert analysis.estimated_probability == pytest.approx(0.68, abs=0.01)
         assert analysis.recommendation == Recommendation.BUY_YES
 
     @patch("src.analyzer.config")
@@ -180,6 +180,7 @@ class TestEnsembleAggregation:
 
         mock_config.SIM_ENSEMBLE_MIN_CONFIDENCE = 0.6
         mock_config.USE_DEBATE_MODE = False
+        mock_config.USE_MARKET_SPECIALIZATION = True
 
         market = Market(
             id="m1", question="Test?", description="", outcomes=["Yes", "No"],
@@ -208,6 +209,7 @@ class TestEnsembleAggregation:
 
         mock_config.SIM_ENSEMBLE_MIN_CONFIDENCE = 0.6
         mock_config.USE_DEBATE_MODE = False
+        mock_config.USE_MARKET_SPECIALIZATION = True
 
         market = Market(
             id="m1", question="Test?", description="", outcomes=["Yes", "No"],

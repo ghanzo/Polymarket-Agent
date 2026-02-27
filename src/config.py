@@ -12,9 +12,6 @@ class Config:
     POSTGRES_HOST: str = os.getenv("POSTGRES_HOST", "postgres")
     POSTGRES_PORT: int = int(os.getenv("POSTGRES_PORT", "5432"))
 
-    # Redis
-    REDIS_URL: str = os.getenv("REDIS_URL", "redis://redis:6379")
-
     # AI API Keys
     ANTHROPIC_API_KEY: str | None = os.getenv("ANTHROPIC_API_KEY") or None
     GEMINI_API_KEY: str | None = os.getenv("GEMINI_API_KEY") or None
@@ -39,6 +36,7 @@ class Config:
     USE_MARKET_SPECIALIZATION: bool = os.getenv("USE_MARKET_SPECIALIZATION", "true").lower() == "true"
     USE_CALIBRATION: bool = os.getenv("USE_CALIBRATION", "true").lower() == "true"
     MIN_CALIBRATION_SAMPLES: int = int(os.getenv("MIN_CALIBRATION_SAMPLES", "5"))
+    USE_ENSEMBLE_ROLES: bool = os.getenv("USE_ENSEMBLE_ROLES", "true").lower() == "true"
 
     # Context enrichment & debate
     USE_EVENT_CONTEXT: bool = os.getenv("USE_EVENT_CONTEXT", "true").lower() == "true"
@@ -52,15 +50,31 @@ class Config:
     SIM_KELLY_FRACTION: float = float(os.getenv("SIM_KELLY_FRACTION", "0.5"))
     SIM_MIN_CONFIDENCE: float = float(os.getenv("SIM_MIN_CONFIDENCE", "0.7"))
     SIM_MIN_EDGE: float = float(os.getenv("SIM_MIN_EDGE", "0.05"))
-    SIM_STOP_LOSS: float = float(os.getenv("SIM_STOP_LOSS", "0.25"))
-    SIM_TAKE_PROFIT: float = float(os.getenv("SIM_TAKE_PROFIT", "0.50"))
+    SIM_STOP_LOSS: float = float(os.getenv("SIM_STOP_LOSS", "0.15"))
+    SIM_TAKE_PROFIT: float = float(os.getenv("SIM_TAKE_PROFIT", "0.40"))
     SIM_MAX_SPREAD: float = float(os.getenv("SIM_MAX_SPREAD", "0.08"))
+    SIM_FEE_RATE: float = float(os.getenv("SIM_FEE_RATE", "0.02"))  # 2% fee on winning profits
     BACKTEST_ASSUMED_SPREAD: float = float(os.getenv("BACKTEST_ASSUMED_SPREAD", "0.04"))
+    BACKTEST_FEE_RATE: float = float(os.getenv("BACKTEST_FEE_RATE", "0.02"))  # 2% fee on winnings
+
+    # Confidence-tiered stops (override SIM_STOP_LOSS/TAKE_PROFIT per bet)
+    SIM_CONFIDENCE_HIGH_THRESHOLD: float = float(os.getenv("SIM_CONFIDENCE_HIGH_THRESHOLD", "0.80"))
+    SIM_CONFIDENCE_MED_THRESHOLD: float = float(os.getenv("SIM_CONFIDENCE_MED_THRESHOLD", "0.60"))
+    SIM_STOP_LOSS_HIGH_CONF: float = float(os.getenv("SIM_STOP_LOSS_HIGH_CONF", "0.07"))
+    SIM_STOP_LOSS_MED_CONF: float = float(os.getenv("SIM_STOP_LOSS_MED_CONF", "0.12"))
+    SIM_STOP_LOSS_LOW_CONF: float = float(os.getenv("SIM_STOP_LOSS_LOW_CONF", "0.15"))
+    SIM_TAKE_PROFIT_HIGH_CONF: float = float(os.getenv("SIM_TAKE_PROFIT_HIGH_CONF", "0.25"))
+    SIM_TAKE_PROFIT_MED_CONF: float = float(os.getenv("SIM_TAKE_PROFIT_MED_CONF", "0.35"))
+    SIM_TAKE_PROFIT_LOW_CONF: float = float(os.getenv("SIM_TAKE_PROFIT_LOW_CONF", "0.40"))
 
     # Trailing stop
-    SIM_TRAILING_BREAKEVEN_TRIGGER: float = float(os.getenv("SIM_TRAILING_BREAKEVEN_TRIGGER", "0.20"))
-    SIM_TRAILING_PROFIT_TRIGGER: float = float(os.getenv("SIM_TRAILING_PROFIT_TRIGGER", "0.35"))
+    SIM_TRAILING_BREAKEVEN_TRIGGER: float = float(os.getenv("SIM_TRAILING_BREAKEVEN_TRIGGER", "0.15"))
+    SIM_TRAILING_PROFIT_TRIGGER: float = float(os.getenv("SIM_TRAILING_PROFIT_TRIGGER", "0.25"))
     SIM_TRAILING_PROFIT_LOCK: float = float(os.getenv("SIM_TRAILING_PROFIT_LOCK", "0.15"))
+
+    # Portfolio-level risk limits
+    SIM_MAX_DRAWDOWN: float = float(os.getenv("SIM_MAX_DRAWDOWN", "0.20"))
+    SIM_MAX_DAILY_LOSS: float = float(os.getenv("SIM_MAX_DAILY_LOSS", "0.10"))
 
     # Event concentration
     SIM_MAX_BETS_PER_EVENT: int = int(os.getenv("SIM_MAX_BETS_PER_EVENT", "2"))
@@ -73,6 +87,11 @@ class Config:
     SIM_MIXED_POPULAR_SLOTS: int = int(os.getenv("SIM_MIXED_POPULAR_SLOTS", "20"))
     SIM_MIXED_NICHE_SLOTS: int = int(os.getenv("SIM_MIXED_NICHE_SLOTS", "10"))
 
+    # Scan depth & market limits
+    SIM_SCAN_DEPTH: int = int(os.getenv("SIM_SCAN_DEPTH", "1000"))
+    SIM_MAX_MARKETS: int = int(os.getenv("SIM_MAX_MARKETS", "50"))
+    SIM_ENRICH_WORKERS: int = int(os.getenv("SIM_ENRICH_WORKERS", "10"))
+
     # Cycle timing
     SIM_INTERVAL_SECONDS: int = int(os.getenv("SIM_INTERVAL_SECONDS", "300"))
     SIM_CYCLE_TIMEOUT: int = int(os.getenv("SIM_CYCLE_TIMEOUT", "600"))  # Max seconds per cycle
@@ -84,11 +103,43 @@ class Config:
     # Crypto noise filter (toggle off for arbitrage)
     FILTER_CRYPTO_NOISE: bool = os.getenv("FILTER_CRYPTO_NOISE", "true").lower() == "true"
 
-    # Arbitrage (scaffold — disabled by default)
-    ARB_ENABLED: bool = os.getenv("ARB_ENABLED", "false").lower() == "true"
-    ARB_BINANCE_WS_URL: str = os.getenv("ARB_BINANCE_WS_URL", "wss://stream.binance.com:9443/ws/btcusdt@trade")
-    ARB_MIN_EDGE: float = float(os.getenv("ARB_MIN_EDGE", "0.005"))
-    ARB_MAX_POSITION_USD: float = float(os.getenv("ARB_MAX_POSITION_USD", "50"))
+    # Longshot bias correction (Snowberg & Wolfers 2010)
+    SIM_LONGSHOT_BIAS_ENABLED: bool = os.getenv("SIM_LONGSHOT_BIAS_ENABLED", "true").lower() == "true"
+    SIM_LONGSHOT_LOW_THRESHOLD: float = float(os.getenv("SIM_LONGSHOT_LOW_THRESHOLD", "0.15"))
+    SIM_LONGSHOT_HIGH_THRESHOLD: float = float(os.getenv("SIM_LONGSHOT_HIGH_THRESHOLD", "0.85"))
+    SIM_LONGSHOT_ADJUSTMENT: float = float(os.getenv("SIM_LONGSHOT_ADJUSTMENT", "0.10"))
+
+    # Analysis cooldown (hours) — skip re-analyzing same market within window
+    SIM_ANALYSIS_COOLDOWN_HOURS: float = float(os.getenv("SIM_ANALYSIS_COOLDOWN_HOURS", "3.0"))
+
+    # ML Pre-Screening
+    ML_PRESCREENER_ENABLED: bool = os.getenv("ML_PRESCREENER_ENABLED", "true").lower() == "true"
+    ML_PRESCREENER_THRESHOLD: float = float(os.getenv("ML_PRESCREENER_THRESHOLD", "0.35"))
+    ML_PRESCREENER_MODEL_PATH: str = os.getenv("ML_PRESCREENER_MODEL_PATH", "models/prescreener.pkl")
+
+    # Slippage modeling
+    DEFAULT_SLIPPAGE_BPS: int = int(os.getenv("DEFAULT_SLIPPAGE_BPS", "25"))
+    USE_ORDERBOOK_SLIPPAGE: bool = os.getenv("USE_ORDERBOOK_SLIPPAGE", "true").lower() == "true"
+    MAX_SLIPPAGE_BPS: int = int(os.getenv("MAX_SLIPPAGE_BPS", "200"))
+
+    # Learning feedback loop
+    USE_ERROR_PATTERNS: bool = os.getenv("USE_ERROR_PATTERNS", "true").lower() == "true"
+    LEARNING_MIN_RESOLVED: int = int(os.getenv("LEARNING_MIN_RESOLVED", "10"))
+
+    # Strategy signals
+    STRATEGY_SIGNALS_ENABLED: bool = os.getenv("STRATEGY_SIGNALS_ENABLED", "true").lower() == "true"
+    STRATEGY_MOMENTUM_THRESHOLD: float = float(os.getenv("STRATEGY_MOMENTUM_THRESHOLD", "0.10"))
+    STRATEGY_REVERSION_THRESHOLD: float = float(os.getenv("STRATEGY_REVERSION_THRESHOLD", "0.05"))
+    STRATEGY_IMBALANCE_THRESHOLD: float = float(os.getenv("STRATEGY_IMBALANCE_THRESHOLD", "0.25"))
+    STRATEGY_CONFIDENCE_ADJ: float = float(os.getenv("STRATEGY_CONFIDENCE_ADJ", "0.05"))
+
+    # Walk-forward backtesting
+    BACKTEST_WINDOW_DAYS: int = int(os.getenv("BACKTEST_WINDOW_DAYS", "30"))
+    BACKTEST_STEP_DAYS: int = int(os.getenv("BACKTEST_STEP_DAYS", "7"))
+
+    # AI Budget (daily caps in USD)
+    AI_BUDGET_SOFT_CAP: float = float(os.getenv("AI_BUDGET_SOFT_CAP", "10.0"))
+    AI_BUDGET_HARD_CAP: float = float(os.getenv("AI_BUDGET_HARD_CAP", "15.0"))
 
     _runtime_overrides_loaded: bool = False
 
@@ -105,8 +156,17 @@ class Config:
                 "SIM_STOP_LOSS": float,
                 "SIM_TAKE_PROFIT": float,
                 "SIM_MAX_SPREAD": float,
+                "SIM_MAX_DRAWDOWN": float,
+                "SIM_MAX_DAILY_LOSS": float,
                 "SIM_SCAN_MODE": str,
                 "SIM_MAX_POSITION_DAYS": int,
+                "SIM_SCAN_DEPTH": int,
+                "SIM_MAX_MARKETS": int,
+                "AI_BUDGET_SOFT_CAP": float,
+                "AI_BUDGET_HARD_CAP": float,
+                "SIM_ANALYSIS_COOLDOWN_HOURS": float,
+                "SIM_LONGSHOT_ADJUSTMENT": float,
+                "ML_PRESCREENER_THRESHOLD": float,
             }
             for key, cast in type_map.items():
                 if key in overrides:

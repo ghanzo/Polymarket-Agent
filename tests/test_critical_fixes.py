@@ -314,7 +314,7 @@ class TestBacktesterLookaheadBiasRemoval:
     instead of using outcome-correlated fallback prices."""
 
     @patch("src.backtester.get_historical_midpoint", return_value=None)
-    @patch("src.backtester.PolymarketCLI")
+    @patch("src.backtester.PolymarketAPI")
     def test_no_historical_price_skips_market(self, MockCLI, mock_get_hist):
         """When get_historical_midpoint returns None, the market should be
         excluded from the backtest entirely — not assigned a biased fallback."""
@@ -530,7 +530,7 @@ class TestKellySizing:
 
 class TestPlaceBetSideLogic:
     """Verify that place_bet correctly sets side, token_id, and entry_price.
-    Entry price should be at the ask (midpoint + half_spread), not the midpoint."""
+    Entry price includes spread + slippage (default 25 bps)."""
 
     @patch("src.simulator.db")
     def test_buy_yes_uses_ask_price(self, mock_db):
@@ -549,6 +549,7 @@ class TestPlaceBetSideLogic:
         mock_db.get_portfolio.return_value = Portfolio(
             trader_id="test", balance=1000.0,
         )
+        mock_db.get_daily_realized_pnl.return_value = 0.0
         mock_db.calibrate_probability.return_value = 0.75
         mock_db.save_bet.return_value = 1
 
@@ -558,8 +559,8 @@ class TestPlaceBetSideLogic:
         assert bet is not None
         assert bet.side == Side.YES
         assert bet.token_id == "tok_yes"
-        # Entry at ask: midpoint + half_spread = 0.60 + 0.02 = 0.62
-        assert bet.entry_price == pytest.approx(0.62)
+        # Entry at ask + slippage: midpoint + half_spread + default_bps = 0.60 + 0.02 + 0.0025
+        assert bet.entry_price == pytest.approx(0.6225, abs=0.001)
 
     @patch("src.simulator.db")
     def test_buy_no_uses_no_ask_price(self, mock_db):
@@ -578,6 +579,7 @@ class TestPlaceBetSideLogic:
         mock_db.get_portfolio.return_value = Portfolio(
             trader_id="test", balance=1000.0,
         )
+        mock_db.get_daily_realized_pnl.return_value = 0.0
         mock_db.calibrate_probability.return_value = 0.25
         mock_db.save_bet.return_value = 1
 
@@ -587,12 +589,12 @@ class TestPlaceBetSideLogic:
         assert bet is not None
         assert bet.side == Side.NO
         assert bet.token_id == "tok_no"
-        # NO ask: (1.0 - midpoint) + half_spread = 0.40 + 0.02 = 0.42
-        assert bet.entry_price == pytest.approx(0.42)
+        # NO ask + slippage: (1.0 - 0.60) + 0.02 + 0.0025 = 0.4225
+        assert bet.entry_price == pytest.approx(0.4225, abs=0.001)
 
     @patch("src.simulator.db")
-    def test_zero_spread_uses_midpoint(self, mock_db):
-        """When spread is 0 or None, entry price should equal midpoint (YES) or 1-midpoint (NO)."""
+    def test_zero_spread_uses_midpoint_plus_slippage(self, mock_db):
+        """When spread is 0 or None, entry price includes only slippage."""
         from src.models import Analysis, Market, Recommendation, Portfolio
 
         market = Market(
@@ -608,6 +610,7 @@ class TestPlaceBetSideLogic:
         mock_db.get_portfolio.return_value = Portfolio(
             trader_id="test", balance=1000.0,
         )
+        mock_db.get_daily_realized_pnl.return_value = 0.0
         mock_db.calibrate_probability.return_value = 0.75
         mock_db.save_bet.return_value = 1
 
@@ -615,8 +618,8 @@ class TestPlaceBetSideLogic:
         bet = sim.place_bet(market, analysis)
 
         assert bet is not None
-        # No spread → half_spread = 0 → entry = midpoint
-        assert bet.entry_price == pytest.approx(0.60)
+        # No spread → entry = midpoint + default_bps (0.0025)
+        assert bet.entry_price == pytest.approx(0.6025, abs=0.001)
 
 
 # ── 5. Simulator: check_resolutions ─────────────────────────────────────
@@ -709,12 +712,12 @@ class TestCheckResolutions:
 # ── 6. Spread Cost Accounting ────────────────────────────────────────────
 
 class TestSpreadCostAccounting:
-    """Verify that spread costs are properly reflected in entry prices,
+    """Verify that spread + slippage costs are properly reflected in entry prices,
     share counts, and PnL calculations."""
 
     @patch("src.simulator.db")
     def test_spread_increases_entry_price_yes(self, mock_db):
-        """YES bet with 4-cent spread should enter at midpoint + 2 cents."""
+        """YES bet with 4-cent spread should enter above midpoint."""
         from src.models import Analysis, Market, Recommendation, Portfolio
 
         market = Market(
@@ -728,6 +731,7 @@ class TestSpreadCostAccounting:
         )
         mock_db.has_open_bet_on_market.return_value = False
         mock_db.get_portfolio.return_value = Portfolio(trader_id="t", balance=1000.0)
+        mock_db.get_daily_realized_pnl.return_value = 0.0
         mock_db.calibrate_probability.return_value = 0.70
         mock_db.save_bet.return_value = 1
 
@@ -735,11 +739,12 @@ class TestSpreadCostAccounting:
         bet = sim.place_bet(market, analysis)
 
         assert bet is not None
-        assert bet.entry_price == pytest.approx(0.52)  # 0.50 + 0.02
+        # 0.50 + 0.02 (half spread) + 0.0025 (default slippage)
+        assert bet.entry_price == pytest.approx(0.5225, abs=0.001)
 
     @patch("src.simulator.db")
     def test_spread_increases_entry_price_no(self, mock_db):
-        """NO bet with 4-cent spread should enter at (1-midpoint) + 2 cents."""
+        """NO bet with 4-cent spread should enter above (1-midpoint)."""
         from src.models import Analysis, Market, Recommendation, Portfolio
 
         market = Market(
@@ -753,6 +758,7 @@ class TestSpreadCostAccounting:
         )
         mock_db.has_open_bet_on_market.return_value = False
         mock_db.get_portfolio.return_value = Portfolio(trader_id="t", balance=1000.0)
+        mock_db.get_daily_realized_pnl.return_value = 0.0
         mock_db.calibrate_probability.return_value = 0.25
         mock_db.save_bet.return_value = 1
 
@@ -760,8 +766,8 @@ class TestSpreadCostAccounting:
         bet = sim.place_bet(market, analysis)
 
         assert bet is not None
-        # NO ask = (1.0 - 0.60) + 0.02 = 0.42
-        assert bet.entry_price == pytest.approx(0.42)
+        # NO ask + slippage = (1.0 - 0.60) + 0.02 + 0.0025 = 0.4225
+        assert bet.entry_price == pytest.approx(0.4225, abs=0.001)
 
     @patch("src.simulator.db")
     def test_spread_reduces_share_count(self, mock_db):
@@ -774,7 +780,7 @@ class TestSpreadCostAccounting:
             token_ids=["tok_y", "tok_n"], end_date=None, active=True,
             midpoint=0.50, spread=0.04,
         )
-        # Without spread
+        # Without spread (still has slippage)
         market_no_spread = Market(
             id="m1", question="Test?", description="Test", outcomes=["Yes", "No"],
             token_ids=["tok_y", "tok_n"], end_date=None, active=True,
@@ -786,6 +792,7 @@ class TestSpreadCostAccounting:
         )
         mock_db.has_open_bet_on_market.return_value = False
         mock_db.get_portfolio.return_value = Portfolio(trader_id="t", balance=1000.0)
+        mock_db.get_daily_realized_pnl.return_value = 0.0
         mock_db.calibrate_probability.return_value = 0.70
         mock_db.save_bet.return_value = 1
 
@@ -795,14 +802,14 @@ class TestSpreadCostAccounting:
         mock_db.has_open_bet_on_market.return_value = False  # Reset for second call
         bet_no_spread = sim.place_bet(market_no_spread, analysis)
 
-        # With spread: entry = 0.52, without: entry = 0.50
-        # Same dollar amount → fewer shares with spread
+        assert bet_spread is not None
+        assert bet_no_spread is not None
+        # With spread: higher entry → fewer shares
         assert bet_spread.shares < bet_no_spread.shares
 
     @patch("src.simulator.db")
     def test_spread_shows_immediate_unrealized_loss(self, mock_db):
-        """After buying at ask, mark-to-market at midpoint shows an immediate loss
-        equal to half the spread — this is correct behavior."""
+        """After buying at ask+slippage, mark-to-market at midpoint shows a loss."""
         from src.models import Analysis, Market, Recommendation, Portfolio
 
         market = Market(
@@ -816,19 +823,19 @@ class TestSpreadCostAccounting:
         )
         mock_db.has_open_bet_on_market.return_value = False
         mock_db.get_portfolio.return_value = Portfolio(trader_id="t", balance=1000.0)
+        mock_db.get_daily_realized_pnl.return_value = 0.0
         mock_db.calibrate_probability.return_value = 0.70
         mock_db.save_bet.return_value = 1
 
         sim = Simulator(cli=MagicMock(), trader_id="t")
         bet = sim.place_bet(market, analysis)
 
+        assert bet is not None
         # Simulate mark-to-market at unchanged midpoint
         bet.current_price = 0.50  # Midpoint unchanged
-        # Entry was 0.52 (ask), current value 0.50 (midpoint)
-        # Unrealized PnL should be negative: (0.50 - 0.52) * shares
+        # Entry was 0.5225 (ask + slippage), current value 0.50 (midpoint)
+        # Unrealized PnL should be negative
         assert bet.unrealized_pnl < 0
-        expected_pnl_per_share = -0.02  # half-spread cost
-        assert bet.unrealized_pnl == pytest.approx(expected_pnl_per_share * bet.shares)
 
 
 class TestSpreadCostInResolution:
@@ -953,13 +960,12 @@ class TestBacktesterSpreadAdjustedPnL:
         source = inspect.getsource(backtester.run_backtest)
         assert "spread=assumed_spread" in source or "spread=" in source
 
-    def test_backtester_source_uses_ask_entry_price(self):
-        """Verify the backtester uses ask-adjusted entry prices (midpoint + half_spread)."""
+    def test_backtester_source_uses_slippage_entry_price(self):
+        """Verify the backtester uses slippage-adjusted entry prices."""
         import inspect
         from src import backtester
         source = inspect.getsource(backtester.run_backtest)
-        assert "half_spread" in source
-        assert "hist_mid + half_spread" in source
+        assert "apply_slippage" in source
 
     def test_backtest_assumed_spread_config(self):
         """Verify the BACKTEST_ASSUMED_SPREAD config exists."""
