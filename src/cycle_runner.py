@@ -207,6 +207,9 @@ def run_cycle(
             bet = sim.place_bet(market, analysis)
             if bet:
                 cycle_bets += 1
+                # Persist simulator extras (probability pipeline, signals, slippage)
+                if analysis.extras:
+                    db.update_analysis_extras(tid, market.id, analysis.extras)
                 logger.info("[%s] BET $%.2f %s @ %.3f — %s",
                             tid, bet.amount, bet.side.value, bet.entry_price,
                             market.question[:45])

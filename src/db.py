@@ -182,6 +182,10 @@ def init_db():
                     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
                 );
             """)
+            # Commit schema migrations before constraint block — constraint
+            # rollbacks must not undo column additions above.
+            conn.commit()
+
             # Data integrity constraints (idempotent)
             for stmt in [
                 "ALTER TABLE bets ADD CONSTRAINT IF NOT EXISTS chk_amount_positive CHECK (amount > 0)",
@@ -473,6 +477,22 @@ def save_analysis(trader_id: str, market_id: str, model: str, recommendation: st
             """, (trader_id, market_id, model, recommendation, confidence,
                   estimated_probability, reasoning, category,
                   _json.dumps(extras) if extras else None))
+        conn.commit()
+
+
+def update_analysis_extras(trader_id: str, market_id: str, extras: dict):
+    """Update extras JSONB on the most recent analysis for a trader+market pair."""
+    import json as _json
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE analysis_log SET extras = %s
+                WHERE id = (
+                    SELECT id FROM analysis_log
+                    WHERE trader_id = %s AND market_id = %s
+                    ORDER BY created_at DESC LIMIT 1
+                )
+            """, (_json.dumps(extras), trader_id, market_id))
         conn.commit()
 
 
