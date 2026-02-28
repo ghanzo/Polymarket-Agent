@@ -25,6 +25,54 @@ from src import db
 logger = logging.getLogger("dashboard")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 
+
+def _enrich_analysis(a: dict) -> dict:
+    """Add derived display fields from analysis extras JSONB."""
+    extras = a.get("extras") or {}
+
+    # Probability pipeline: raw → calibrated → platt → consensus → final
+    pipeline = None
+    if extras:
+        pipeline = {"raw": extras.get("raw_est_prob")}
+        if "calibrated_prob" in extras:
+            pipeline["calibrated"] = extras["calibrated_prob"]
+        if "platt_prob" in extras:
+            pipeline["platt"] = extras["platt_prob"]
+        if "pre_blend_prob" in extras:
+            pipeline["consensus_input"] = extras["pre_blend_prob"]
+        if "market_midpoint" in extras:
+            pipeline["market_midpoint"] = extras["market_midpoint"]
+            pipeline["market_weight"] = extras.get("market_weight")
+        if "final_est_prob" in extras:
+            pipeline["final"] = extras["final_est_prob"]
+    a["prob_pipeline"] = pipeline
+
+    # Strategy signals
+    a["signals"] = extras.get("signals", [])
+
+    # Model agreement (ensemble)
+    model_votes = extras.get("model_votes")
+    if model_votes:
+        a["model_agreement"] = {
+            "votes": model_votes,
+            "unanimous": extras.get("unanimous", False),
+            "disagreement_std": extras.get("disagreement_std"),
+        }
+    else:
+        a["model_agreement"] = None
+
+    # Debate info
+    if extras.get("debate_active"):
+        a["debate_info"] = {
+            "active": True,
+            "early_exit": extras.get("debate_early_exit", False),
+            "summary": extras.get("debate_summary"),
+        }
+    else:
+        a["debate_info"] = None
+
+    return a
+
 sim_state = {
     "last_run": None,
     "cycle_count": 0,
@@ -188,13 +236,26 @@ async def dashboard(request: Request):
     open_bets = [b for b in all_bets if b.status.value == "OPEN"]
     closed_bets = [b for b in all_bets if b.status.value != "OPEN"]
 
-    # Add position age to open bets for display
+    # Enrich analyses with derived display fields
+    analyses = [_enrich_analysis(a) for a in analyses]
+
+    # Add position age and slippage display to open bets
     now = datetime.now(timezone.utc)
     for bet in open_bets:
         placed = bet.placed_at
         if placed.tzinfo is None:
             placed = placed.replace(tzinfo=timezone.utc)
         bet._age_days = (now - placed).total_seconds() / 86400
+        # Slippage display
+        if bet.slippage_bps is not None:
+            impact_pct = round(bet.slippage_bps / 100, 2) if bet.slippage_bps else 0
+            bet._slippage_display = {
+                "bps": round(bet.slippage_bps, 1),
+                "midpoint": bet.midpoint_at_entry,
+                "impact_pct": impact_pct,
+            }
+        else:
+            bet._slippage_display = None
 
     # Aggregate stats
     total_value = sum(p.portfolio_value for p in portfolios)

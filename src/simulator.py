@@ -66,15 +66,23 @@ class Simulator:
 
         # Apply calibration adjustment if available
         est_prob = analysis.estimated_probability
+        extras = {"raw_est_prob": round(est_prob, 4)}
+
         if config.USE_CALIBRATION:
+            prev_prob = est_prob
             est_prob = db.calibrate_probability(
                 self.trader_id, est_prob, min_samples=config.MIN_CALIBRATION_SAMPLES
             )
+            if est_prob != prev_prob:
+                extras["calibrated_prob"] = round(est_prob, 4)
 
         # Platt scaling: correct LLM hedging bias via logistic regression
         try:
             from src.learning import apply_platt_scaling
+            prev_prob = est_prob
             est_prob = apply_platt_scaling(est_prob, self.trader_id)
+            if est_prob != prev_prob:
+                extras["platt_prob"] = round(est_prob, 4)
         except Exception:
             pass
 
@@ -84,9 +92,11 @@ class Simulator:
             if midpoint < config.SIM_LONGSHOT_LOW_THRESHOLD:
                 # Longshots overpriced — shrink our estimate toward 0
                 est_prob = est_prob * (1 - config.SIM_LONGSHOT_ADJUSTMENT)
+                extras["longshot_adj"] = True
             elif midpoint > config.SIM_LONGSHOT_HIGH_THRESHOLD:
                 # Favorites underpriced — push our estimate toward 1
                 est_prob = est_prob + (1 - est_prob) * config.SIM_LONGSHOT_ADJUSTMENT
+                extras["longshot_adj"] = True
 
         # Strategy signal adjustment
         try:
@@ -95,6 +105,16 @@ class Simulator:
             if signals:
                 adj = aggregate_confidence_adjustment(signals, side.value)
                 est_prob = max(0.01, min(0.99, est_prob + adj))
+                extras["signals"] = [
+                    {
+                        "name": s.name,
+                        "direction": s.direction,
+                        "strength": round(s.strength, 3),
+                        "description": s.description,
+                    }
+                    for s in signals
+                ]
+                extras["signal_net_adj"] = round(adj, 4)
                 logger.debug("Strategy signals for %s: %s, adj=%.3f",
                              market.question[:30], [s.name for s in signals], adj)
         except Exception:
@@ -138,6 +158,13 @@ class Simulator:
                         slippage_bps, config.MAX_SLIPPAGE_BPS, market.question[:40])
             return None
 
+        extras["slippage_bps"] = round(slippage_bps, 1)
+        extras["midpoint"] = round(midpoint, 4)
+        extras["final_est_prob"] = round(est_prob, 4)
+
+        # Attach extras to analysis for persistence upstream
+        analysis.extras = extras
+
         shares = bet_amount / entry_price
 
         bet = Bet(
@@ -153,6 +180,8 @@ class Simulator:
             event_id=market.event_id,
             category=analysis.category,
             confidence=analysis.confidence,
+            slippage_bps=round(slippage_bps, 1),
+            midpoint_at_entry=midpoint,
         )
 
         bet.id = db.save_bet(bet)

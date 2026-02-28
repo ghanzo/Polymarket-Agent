@@ -623,6 +623,15 @@ class EnsembleAnalyzer(Analyzer):
     def _aggregate_results(self, market: Market, results: list[Analysis]) -> Analysis:
         category = classify_market(market.question) if config.USE_MARKET_SPECIALIZATION else "general"
 
+        # Build model votes for extras
+        model_votes = {}
+        for r in results:
+            model_votes[r.model] = {
+                "recommendation": r.recommendation.value,
+                "confidence": round(r.confidence, 4),
+                "est_prob": round(r.estimated_probability, 4),
+            }
+
         if not results:
             return Analysis(
                 market_id=market.id, model="ensemble",
@@ -630,6 +639,7 @@ class EnsembleAnalyzer(Analyzer):
                 confidence=0.0, estimated_probability=0.5,
                 reasoning="All analyzers failed",
                 category=category,
+                extras={"model_votes": model_votes},
             )
 
         non_skip = [r for r in results if r.recommendation != Recommendation.SKIP]
@@ -644,6 +654,7 @@ class EnsembleAnalyzer(Analyzer):
                     f"{r.model}: {r.reasoning}" for r in results
                 ),
                 category=category,
+                extras={"model_votes": model_votes},
             )
 
         # Load performance-based weights (falls back to empty = equal weights)
@@ -682,20 +693,29 @@ class EnsembleAnalyzer(Analyzer):
             avg_prob = sum(r.estimated_probability * w for r, w in zip(voters, voter_weights)) / w_total
             avg_confidence = sum(r.confidence * w for r, w in zip(voters, voter_weights)) / w_total
 
+            extras = {"model_votes": model_votes}
+
             # Market consensus: blend model probability with market price
             midpoint = market.midpoint
             if config.USE_MARKET_CONSENSUS and midpoint is not None and 0.01 < midpoint < 0.99:
+                extras["pre_blend_prob"] = round(avg_prob, 4)
                 market_weight = self._compute_market_weight(market)
                 model_weight = 1.0 - market_weight
                 avg_prob = avg_prob * model_weight + midpoint * market_weight
+                extras["market_weight"] = round(market_weight, 4)
+                extras["market_midpoint"] = round(midpoint, 4)
 
             # Disagreement penalty
             probs = [r.estimated_probability for r in non_skip]
             if len(probs) > 1:
                 mean_p = sum(probs) / len(probs)
                 std_dev = (sum((p - mean_p) ** 2 for p in probs) / len(probs)) ** 0.5
+                extras["disagreement_std"] = round(std_dev, 4)
                 if std_dev > 0.25:
                     avg_confidence = max(0.0, avg_confidence - 0.3)
+
+            recs = set(r.recommendation for r in non_skip)
+            extras["unanimous"] = len(recs) == 1
 
             combined = " | ".join(
                 f"{r.model} ({r.confidence:.0%}): {r.reasoning}" for r in voters
@@ -706,10 +726,19 @@ class EnsembleAnalyzer(Analyzer):
                 confidence=avg_confidence, estimated_probability=avg_prob,
                 reasoning=combined,
                 category=category,
+                extras=extras,
             )
 
         # No weighted majority — skip
         avg_prob = sum(r.estimated_probability for r in results) / len(results)
+        probs = [r.estimated_probability for r in non_skip]
+        extras = {"model_votes": model_votes}
+        if len(probs) > 1:
+            mean_p = sum(probs) / len(probs)
+            std_dev = (sum((p - mean_p) ** 2 for p in probs) / len(probs)) ** 0.5
+            extras["disagreement_std"] = round(std_dev, 4)
+        extras["unanimous"] = False
+
         combined = " | ".join(
             f"{r.model}: {r.recommendation.value} ({r.confidence:.0%})" for r in results
         )
@@ -719,6 +748,7 @@ class EnsembleAnalyzer(Analyzer):
             confidence=0.0, estimated_probability=avg_prob,
             reasoning=f"Models disagree: {combined}",
             category=category,
+            extras=extras,
         )
 
     @staticmethod
@@ -763,6 +793,7 @@ class EnsembleAnalyzer(Analyzer):
                 confidence=0.0, estimated_probability=0.5,
                 reasoning="No Round 1 results to debate.",
                 category=category,
+                extras={"debate_active": True},
             )
 
         # Early exit: if all models unanimously agree, skip the expensive debate
@@ -772,7 +803,12 @@ class EnsembleAnalyzer(Analyzer):
             if len(recs) == 1:
                 logger.info("[debate] All %d models agree on %s — skipping debate",
                             len(non_skip), recs.pop().value)
-                return self._aggregate_results(market, round1_results)
+                result = self._aggregate_results(market, round1_results)
+                if result.extras is None:
+                    result.extras = {}
+                result.extras["debate_active"] = True
+                result.extras["debate_early_exit"] = True
+                return result
 
         # Build model->analyzer lookup for rebuttal calls
         analyzer_map: dict[str, Analyzer] = {}
@@ -833,6 +869,20 @@ class EnsembleAnalyzer(Analyzer):
         try:
             text = synthesizer._call_model_with_retry(synthesis_prompt)
             result = synthesizer._parse_response(text, market.id, "ensemble:debate")
+            debate_extras = {
+                "debate_active": True,
+                "debate_summary": f"Synthesis by {synthesizer._model_id()}, "
+                    f"{len(round2_rebuttals)} rebuttals",
+            }
+            # Merge model_votes from round1
+            model_votes = {}
+            for r in round1_results:
+                model_votes[r.model] = {
+                    "recommendation": r.recommendation.value,
+                    "confidence": round(r.confidence, 4),
+                    "est_prob": round(r.estimated_probability, 4),
+                }
+            debate_extras["model_votes"] = model_votes
             return Analysis(
                 market_id=result.market_id,
                 model="ensemble:debate",
@@ -841,6 +891,7 @@ class EnsembleAnalyzer(Analyzer):
                 estimated_probability=result.estimated_probability,
                 reasoning=f"[Debate synthesis] {result.reasoning}",
                 category=category,
+                extras=debate_extras,
             )
         except Exception as e:
             logger.warning("[debate] Synthesis failed: %s — falling back to aggregate", e)

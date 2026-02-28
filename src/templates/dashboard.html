@@ -180,13 +180,58 @@
         /* Analysis log */
         .analysis-item {
             padding: 12px 20px; border-bottom: 1px solid #1a1a2e; font-size: 13px;
+            cursor: pointer; transition: background 0.15s;
         }
         .analysis-item:hover { background: #1a1a2e; }
         .analysis-item .rec { font-weight: 700; display: inline-block; min-width: 80px; }
         .analysis-item .reasoning { color: #888; font-size: 12px; margin-top: 4px; line-height: 1.4; }
+        .analysis-item .expand-arrow { display: inline-block; transition: transform 0.2s; margin-right: 6px; color: #555; font-size: 11px; }
+        .analysis-item.expanded .expand-arrow { transform: rotate(90deg); }
+        .analysis-item .summary-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .analysis-detail { display: none; margin-top: 10px; padding: 12px; background: #0d0d18; border-radius: 8px; border: 1px solid #1a1a2e; }
+        .analysis-item.expanded .analysis-detail { display: block; }
+        .analysis-item.expanded .reasoning-preview { display: none; }
         .rec-buy-yes { color: #4ade80; }
         .rec-buy-no { color: #f87171; }
         .rec-skip { color: #555; }
+
+        /* Probability pipeline */
+        .prob-pipeline { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; }
+        .prob-stage { padding: 3px 8px; border-radius: 4px; font-size: 11px; background: #1a1a2e; color: #aaa; white-space: nowrap; }
+        .prob-stage .stage-label { color: #666; font-size: 10px; }
+        .prob-stage .stage-val { color: #e0e0e0; font-weight: 600; }
+        .prob-arrow { color: #333; font-size: 10px; }
+
+        /* Signal badges */
+        .signal-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; margin: 2px; }
+        .signal-bullish { background: #1a3a1a; color: #4ade80; border: 1px solid #2d5a2d; }
+        .signal-bearish { background: #3a1a1a; color: #f87171; border: 1px solid #5a2d2d; }
+        .signal-badge .strength-bar { display: inline-block; width: 24px; height: 4px; background: #333; border-radius: 2px; overflow: hidden; }
+        .signal-badge .strength-fill { height: 100%; border-radius: 2px; }
+        .signal-bullish .strength-fill { background: #4ade80; }
+        .signal-bearish .strength-fill { background: #f87171; }
+
+        /* Model agreement */
+        .model-agreement { margin-top: 8px; }
+        .model-vote-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 11px; }
+        .model-vote-row .vote-model { min-width: 80px; color: #aaa; }
+        .model-vote-row .vote-rec { font-weight: 600; min-width: 70px; }
+        .unanimous-badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #1a3a1a; color: #4ade80; border: 1px solid #2d5a2d; }
+
+        /* Debate & signal count badges */
+        .debate-badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #3a3a1a; color: #fbbf24; border: 1px solid #5a5a2d; }
+        .signal-count { display: inline-flex; align-items: center; gap: 2px; padding: 1px 6px; border-radius: 4px; font-size: 10px; color: #facc15; background: #2a2a1a; }
+
+        /* Slippage tags */
+        .slippage-tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+        .slip-low { background: #1a3a1a; color: #4ade80; }
+        .slip-med { background: #3a3a1a; color: #fbbf24; }
+        .slip-high { background: #3a1a1a; color: #f87171; }
+
+        /* Detail sections */
+        .detail-section { margin-top: 8px; }
+        .detail-section-title { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+        .detail-reasoning { color: #999; font-size: 12px; line-height: 1.5; max-height: 200px; overflow-y: auto; }
 
         .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
         .empty-state { padding: 40px 20px; text-align: center; color: #555; font-size: 13px; }
@@ -825,6 +870,7 @@
                         <th>Side</th>
                         <th>Amount</th>
                         <th>Entry</th>
+                        <th>Slip</th>
                         <th>Current</th>
                         <th>P&L</th>
                         <th>Age</th>
@@ -839,6 +885,17 @@
                         <td class="side-{{ bet.side.value|lower }}">{{ bet.side.value }}</td>
                         <td>${{ "%.2f"|format(bet.amount) }}</td>
                         <td>{{ "%.3f"|format(bet.entry_price) }}</td>
+                        <td>
+                            {% if bet._slippage_display %}
+                                {% set bps = bet._slippage_display.bps %}
+                                <span class="slippage-tag {{ 'slip-low' if bps < 30 else ('slip-med' if bps < 100 else 'slip-high') }}"
+                                      title="Midpoint: {{ '%.3f'|format(bet._slippage_display.midpoint or 0) }}">
+                                    {{ "%.0f"|format(bps) }}bp
+                                </span>
+                            {% else %}
+                                <span style="color: #444;">—</span>
+                            {% endif %}
+                        </td>
                         <td>{{ "%.3f"|format(bet.current_price or 0) }}</td>
                         <td class="{{ 'positive' if bet.unrealized_pnl >= 0 else 'negative' }}">
                             ${{ "%+.2f"|format(bet.unrealized_pnl) }}
@@ -890,20 +947,118 @@
                     <span class="badge">Latest {{ analyses|length }}</span>
                 </div>
                 {% if analyses %}
-                <div style="max-height: 500px; overflow-y: auto;">
+                <div style="max-height: 600px; overflow-y: auto;">
                 {% for a in analyses %}
-                    <div class="analysis-item">
-                        <span class="trader-tag tag-{{ a.trader_id }}">{{ a.trader_id }}</span>
-                        <span class="rec rec-{{ a.recommendation|lower|replace('_', '-') }}">
-                            {{ a.recommendation }}
-                        </span>
-                        {% if a.confidence > 0 %}
-                        <span style="color: #aaa;">{{ "%.0f"|format(a.confidence * 100) }}%</span>
-                        {% endif %}
-                        {% if a.estimated_probability %}
-                        <span style="color: #666; font-size: 11px;">est: {{ "%.0f"|format(a.estimated_probability * 100) }}%</span>
-                        {% endif %}
-                        <div class="reasoning">{{ a.reasoning[:250] }}{% if a.reasoning|length > 250 %}...{% endif %}</div>
+                    <div class="analysis-item" onclick="this.classList.toggle('expanded')">
+                        <div class="summary-row">
+                            <span class="expand-arrow">&#9658;</span>
+                            <span class="trader-tag tag-{{ a.trader_id }}">{{ a.trader_id }}</span>
+                            <span class="rec rec-{{ a.recommendation|lower|replace('_', '-') }}">
+                                {{ a.recommendation }}
+                            </span>
+                            {% if a.confidence > 0 %}
+                            <span style="color: #aaa;">{{ "%.0f"|format(a.confidence * 100) }}%</span>
+                            {% endif %}
+                            {% if a.estimated_probability %}
+                            <span style="color: #666; font-size: 11px;">est: {{ "%.0f"|format(a.estimated_probability * 100) }}%</span>
+                            {% endif %}
+                            {% if a.signals %}
+                            <span class="signal-count" title="{{ a.signals|length }} signal(s)">&#9889; {{ a.signals|length }}</span>
+                            {% endif %}
+                            {% if a.model_agreement and a.model_agreement.unanimous %}
+                            <span class="unanimous-badge">Unanimous</span>
+                            {% endif %}
+                            {% if a.debate_info %}
+                            <span class="debate-badge">{% if a.debate_info.early_exit %}Debate &#10003;{% else %}Debated{% endif %}</span>
+                            {% endif %}
+                        </div>
+                        <div class="reasoning-preview reasoning">{{ a.reasoning[:150] }}{% if a.reasoning|length > 150 %}...{% endif %}</div>
+
+                        <!-- Expanded detail panel -->
+                        <div class="analysis-detail" onclick="event.stopPropagation()">
+                            {% if a.prob_pipeline %}
+                            <div class="detail-section">
+                                <div class="detail-section-title">Probability Pipeline</div>
+                                <div class="prob-pipeline">
+                                    {% if a.prob_pipeline.raw is not none %}
+                                    <span class="prob-stage"><span class="stage-label">Raw</span> <span class="stage-val">{{ "%.0f"|format(a.prob_pipeline.raw * 100) }}%</span></span>
+                                    {% endif %}
+                                    {% if a.prob_pipeline.calibrated is not none %}
+                                    <span class="prob-arrow">&#8594;</span>
+                                    <span class="prob-stage"><span class="stage-label">Cal</span> <span class="stage-val">{{ "%.0f"|format(a.prob_pipeline.calibrated * 100) }}%</span></span>
+                                    {% endif %}
+                                    {% if a.prob_pipeline.platt is not none %}
+                                    <span class="prob-arrow">&#8594;</span>
+                                    <span class="prob-stage"><span class="stage-label">Platt</span> <span class="stage-val">{{ "%.0f"|format(a.prob_pipeline.platt * 100) }}%</span></span>
+                                    {% endif %}
+                                    {% if a.prob_pipeline.market_midpoint is not none %}
+                                    <span class="prob-arrow">&#8594;</span>
+                                    <span class="prob-stage"><span class="stage-label">Mkt {{ "%.0f"|format((a.prob_pipeline.market_weight or 0) * 100) }}%</span> <span class="stage-val">{{ "%.0f"|format(a.prob_pipeline.market_midpoint * 100) }}%</span></span>
+                                    {% endif %}
+                                    {% if a.prob_pipeline.final is not none %}
+                                    <span class="prob-arrow">&#8594;</span>
+                                    <span class="prob-stage" style="background: #1a2a1a; border: 1px solid #2d5a2d;"><span class="stage-label">Final</span> <span class="stage-val" style="color: #4ade80;">{{ "%.0f"|format(a.prob_pipeline.final * 100) }}%</span></span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            {% if a.signals %}
+                            <div class="detail-section">
+                                <div class="detail-section-title">Strategy Signals</div>
+                                <div>
+                                    {% for s in a.signals %}
+                                    <span class="signal-badge {{ 'signal-bullish' if s.direction == 'bullish' else 'signal-bearish' }}"
+                                          title="{{ s.description }}">
+                                        {{ '&#9650;' if s.direction == 'bullish' else '&#9660;' }}
+                                        {{ s.name }}
+                                        <span class="strength-bar"><span class="strength-fill" style="width: {{ (s.strength * 100)|int }}%"></span></span>
+                                    </span>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            {% if a.model_agreement %}
+                            <div class="detail-section">
+                                <div class="detail-section-title">Model Agreement
+                                    {% if a.model_agreement.disagreement_std is not none %}
+                                    <span style="color: #555; font-weight: 400;">(std: {{ "%.2f"|format(a.model_agreement.disagreement_std) }})</span>
+                                    {% endif %}
+                                </div>
+                                <div class="model-agreement">
+                                    {% for model, vote in a.model_agreement.votes.items() %}
+                                    <div class="model-vote-row">
+                                        <span class="vote-model">{{ model.split(':')[0] }}</span>
+                                        <span class="vote-rec rec-{{ vote.recommendation|lower|replace('_', '-') }}">{{ vote.recommendation }}</span>
+                                        <span style="color: #aaa;">{{ "%.0f"|format(vote.confidence * 100) }}%</span>
+                                        <span style="color: #666;">est: {{ "%.0f"|format(vote.est_prob * 100) }}%</span>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            {% if a.debate_info %}
+                            <div class="detail-section">
+                                <div class="detail-section-title">Debate</div>
+                                <div style="font-size: 12px; color: #aaa;">
+                                    {% if a.debate_info.early_exit %}
+                                        All models agreed — debate skipped (early exit)
+                                    {% elif a.debate_info.summary %}
+                                        {{ a.debate_info.summary }}
+                                    {% else %}
+                                        Debate completed
+                                    {% endif %}
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            <div class="detail-section">
+                                <div class="detail-section-title">Full Reasoning</div>
+                                <div class="detail-reasoning">{{ a.reasoning }}</div>
+                            </div>
+                        </div>
                     </div>
                 {% endfor %}
                 </div>

@@ -114,6 +114,9 @@ def init_db():
             cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS category TEXT;")
             cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION DEFAULT 0.0;")
             cur.execute("ALTER TABLE analysis_log ADD COLUMN IF NOT EXISTS category TEXT;")
+            cur.execute("ALTER TABLE analysis_log ADD COLUMN IF NOT EXISTS extras JSONB;")
+            cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS slippage_bps DOUBLE PRECISION;")
+            cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS midpoint_at_entry DOUBLE PRECISION;")
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_analysis_log_cooldown
                     ON analysis_log (trader_id, market_id, created_at DESC);
@@ -315,14 +318,15 @@ def save_bet(bet: Bet) -> int:
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO bets (trader_id, market_id, market_question, side, amount, entry_price,
-                                      shares, token_id, status, placed_at, event_id, category, confidence)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                      shares, token_id, status, placed_at, event_id, category, confidence,
+                                      slippage_bps, midpoint_at_entry)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """, (
                     bet.trader_id, bet.market_id, bet.market_question, bet.side.value,
                     bet.amount, bet.entry_price, bet.shares, bet.token_id,
                     bet.status.value, bet.placed_at, bet.event_id, bet.category,
-                    bet.confidence,
+                    bet.confidence, bet.slippage_bps, bet.midpoint_at_entry,
                 ))
                 result = cur.fetchone()
                 if not result:
@@ -458,15 +462,17 @@ def get_analysis_for_bet(trader_id: str, market_id: str) -> dict | None:
 
 def save_analysis(trader_id: str, market_id: str, model: str, recommendation: str,
                   confidence: float, estimated_probability: float, reasoning: str,
-                  category: str = "general"):
+                  category: str = "general", extras: dict | None = None):
+    import json as _json
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO analysis_log (trader_id, market_id, model, recommendation,
-                                          confidence, estimated_probability, reasoning, category)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                          confidence, estimated_probability, reasoning, category, extras)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (trader_id, market_id, model, recommendation, confidence,
-                  estimated_probability, reasoning, category))
+                  estimated_probability, reasoning, category,
+                  _json.dumps(extras) if extras else None))
         conn.commit()
 
 
@@ -816,4 +822,6 @@ def _row_to_bet(row: dict) -> Bet:
         peak_price=row.get("peak_price"),
         category=row.get("category", "general"),
         confidence=row.get("confidence", 0.0) or 0.0,
+        slippage_bps=row.get("slippage_bps"),
+        midpoint_at_entry=row.get("midpoint_at_entry"),
     )

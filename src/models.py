@@ -83,6 +83,7 @@ class Analysis:
     reasoning: str
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     category: str = "general"
+    extras: dict | None = None
 
 
 @dataclass
@@ -107,6 +108,8 @@ class Bet:
     peak_price: float | None = None
     category: str = "general"
     confidence: float = 0.0
+    slippage_bps: float | None = None
+    midpoint_at_entry: float | None = None
 
     @property
     def unrealized_pnl(self) -> float:

@@ -134,6 +134,7 @@ def run_cycle(
                     analysis.confidence, analysis.estimated_probability,
                     analysis.reasoning,
                     category=analysis.category,
+                    extras=analysis.extras,
                 )
             except Exception as e:
                 errors += 1
@@ -187,6 +188,7 @@ def run_cycle(
                     analysis.confidence, analysis.estimated_probability,
                     analysis.reasoning,
                     category=analysis.category,
+                    extras=analysis.extras,
                 )
             except Exception as e:
                 result.errors_by_trader["ensemble"] = result.errors_by_trader.get("ensemble", 0) + 1
