@@ -1,7 +1,7 @@
 # Polymarket Paper Trading Platform — Roadmap
 
 **Last updated**: 2026-02-27
-**Current grade**: A- (626 tests, 17 source modules)
+**Current grade**: A (656 tests, 18 source modules)
 **Synthesized from**: [Independent Review](independent-review.md), [Comparative Review](comparative-review.md)
 
 ---
@@ -13,6 +13,7 @@ The platform is a paper trading simulation using multi-model AI analysis (Claude
 **Completed phases:**
 - Phase 1 (C+ → B+): ML pre-screening, architecture split, DB constraints, integration tests, dead code cleanup
 - Phase 2 (B+ → A-): Slippage modeling, learning feedback loop, strategy signals, walk-forward risk metrics
+- Phase 3 (A- → A): Platt scaling, market consensus, walk-forward backtesting, cycle runner extraction, critical bug fixes
 
 **Key strengths** (from comparative review):
 - Multi-model debate with role specialization — unique in the ecosystem
@@ -30,82 +31,103 @@ The platform is a paper trading simulation using multi-model AI analysis (Claude
 
 ---
 
-## Phase 3: A- → A (Correctness & Validation)
+## Phase 3: A- → A (Correctness & Validation) — COMPLETE
 
-**Goal**: Fix critical bugs, validate that the system actually has an edge, and eliminate false confidence from the backtester. This phase is about making the existing system trustworthy before adding new features.
+All items implemented and verified with 656 passing tests. See commit `8e98120`.
+
+- **3.1 Bug fixes**: reset_weights per cycle, temporal leakage default off, race conditions fixed, PnL fee applied, drawdown uses portfolio_value
+- **3.2 Platt scaling**: `fit_platt_scaling()` + `apply_platt_scaling()` in learning.py, integrated into simulator
+- **3.3 Market consensus**: Ensemble blends market midpoint weighted by volume/liquidity
+- **3.4 Walk-forward**: `walk_forward()` in backtester.py with rolling windows, CLI flags
+- **3.5 Cycle runner**: Shared `src/cycle_runner.py`, run_sim and dashboard both delegate to it
+
+---
+
+## Phase 3.5: Dashboard UI Modernization
+
+**Goal**: Surface the backend intelligence in the UI. The backend tracks AI costs, Platt calibration, strategy signals, slippage, learning weights, risk metrics, and pre-screening stats — none of which are visible to the user. This phase bridges that gap.
 
 **Estimated effort**: 20-30 hours
 
-### 3.1 Critical Bug Fixes
+### 3.5.1 AI Cost & Operations Panel
 
-| Item | Source | Description | Effort |
-|------|--------|-------------|--------|
-| Call `reset_weights()` at cycle start | Independent #1 | Add `learning.reset_weights()` to both `run_sim.run()` and `dashboard._run_cycle()` at the start of each cycle. Without this, the learning feedback loop is non-functional. | 30 min |
-| Fix backtester temporal leakage | Independent #2 | When `use_web_search=True`, Brave returns current results, not historical. Default to `use_web_search=False` in backtesting and add a prominent warning. Long-term: cache web results at bet time and replay them. | 2 hrs |
-| Fix dashboard race conditions | Independent #3 | Acquire `_sim_lock` in `_analyze_all_markets` before mutating `sim_state["traders"]`. Audit all `sim_state` mutations for lock coverage. | 2 hrs |
-| Fix dashboard PnL mismatch | Independent #4 | Apply `SIM_FEE_RATE` in the `/api/close-position` PnL calculation to match `db.close_bet()`. | 30 min |
-| Fix drawdown check | Independent #10 | Use portfolio value (balance + unrealized) instead of just cash balance for drawdown limit. | 1 hr |
+**Priority**: High — real money is being spent, user needs visibility.
 
-### 3.2 Platt Scaling Calibration
+The backend already passes `ai_costs` dict to the template (daily total, per-model, call counts, latency stats, cache stats, budget remaining) but it's never rendered.
 
-**Source**: Comparative Review Priority 1
+- Daily spend gauge with soft/hard budget cap indicators
+- Per-model cost breakdown (mini bar chart or table)
+- API latency stats (avg, p95) per model
+- Web search cache hit rate
+- Call count per model
+- Budget remaining with warning states
 
-The single most impactful improvement to prediction quality. AIA Forecaster's superforecaster-matching performance is largely attributed to Platt scaling correcting LLM hedging bias (tendency to predict closer to 50%).
+**Effort**: 4-6 hrs
 
-- Add `calibrate_platt()` to `src/learning.py` using `sklearn.linear_model.LogisticRegression`
-- Fit on historical (estimated_probability, outcome) pairs after 50+ resolved bets
-- Apply transformation in `simulator.place_bet()` alongside existing bucket-based calibration
-- Feature-flagged via `USE_PLATT_SCALING` config var
-- Requires: scikit-learn (already a dependency)
+### 3.5.2 Analysis Detail & Signal Transparency
 
-**Effort**: 4-8 hrs
+**Priority**: High — understand WHY bets are placed.
 
-### 3.3 Market Price as Ensemble Member
+Current analysis log shows recommendation + confidence but hides the reasoning chain.
 
-**Source**: Comparative Review Priority 2
+- Expandable analysis cards showing: raw model prob → Platt-calibrated prob → consensus-blended prob
+- Strategy signals that fired (momentum/reversion/liquidity/time-decay with direction indicators)
+- Slippage cost on open positions (entry price vs midpoint, BPS impact)
+- Model agreement/disagreement indicator on ensemble decisions
+- Debate summary when debate mode is active
 
-Research demonstrates LLM + market consensus outperforms either alone. Currently the system only compares against market price; it should formally include it as a weighted input.
+**Effort**: 6-8 hrs
 
-- In `EnsembleAnalyzer._aggregate_results()`, add market midpoint as a pseudo-analysis
-- Weight derived from market liquidity (high volume/liquidity = more informative price)
-- Final probability becomes weighted average of model estimates and market price
-- Feature-flagged via `USE_MARKET_CONSENSUS` config var
+### 3.5.3 Learning & Calibration Visualization
 
-**Effort**: 2-4 hrs
+**Priority**: Medium — build trust in the system's self-improvement.
 
-### 3.4 Walk-Forward Backtesting
+- Model weight bars showing ensemble contribution per trader (from `compute_model_weights()`)
+- Category performance heatmap (models × categories, color = accuracy)
+- Error patterns detected per model (from `detect_error_patterns()`)
+- Calibration curve (predicted probability buckets vs actual outcome rate)
 
-**Source**: Comparative Review Priority 3, Independent #3.5
+**Effort**: 6-8 hrs
 
-Config already has `BACKTEST_WINDOW_DAYS` and `BACKTEST_STEP_DAYS` but no actual walk-forward implementation. Without this, all performance claims are suspect.
+### 3.5.4 Risk & Portfolio Analytics
 
-- Add `walk_forward()` function to `src/backtester.py`
-- Rolling window: train calibration on in-sample, test on out-of-sample
-- Report cumulative out-of-sample metrics with confidence intervals
-- Use existing `compute_risk_metrics()` per window
-- Fix static bankroll issue (update bankroll as bets resolve)
+**Priority**: Medium — critical for real trading readiness.
 
-**Effort**: 8 hrs
+- Portfolio drawdown chart (peak-to-trough over time from snapshots)
+- Position concentration by category (donut/pie chart)
+- Exposure breakdown (capital per position as % of portfolio)
+- Daily P&L bar chart (realized gains/losses per day)
 
-### 3.5 Extract Shared Cycle Runner
+**Effort**: 4-6 hrs
 
-**Source**: Independent #5
+### 3.5.5 Backtest Page Upgrades
 
-`run_sim.run()` and `dashboard._run_cycle()` are near-identical copies that have already begun diverging (run_sim hardcodes "grok" for reviews, dashboard reviews all traders).
+**Priority**: Medium — risk metrics and walk-forward results exist but aren't rendered.
 
-- Extract a shared `src/cycle_runner.py` with the 8-step pipeline
-- Both `run_sim.py` and `dashboard.py` call into it
-- Eliminates DRY violation and ensures bugfixes apply to both paths
+- Risk metrics table: Sharpe, Sortino, MaxDD, Calmar, Profit Factor per model
+- Walk-forward per-window results table
+- Equity curve chart per model
+- Run walk-forward from UI (not just CLI)
 
-**Effort**: 3-4 hrs
+**Effort**: 4-6 hrs
 
-### Phase 3 Exit Criteria
-- `reset_weights()` called every cycle, verified by test
-- Backtester defaults to `use_web_search=False`
-- Dashboard race conditions fixed, PnL calculation corrected
-- Platt scaling operational with 50+ resolved bets
-- Walk-forward backtest produces out-of-sample Sharpe > 0
-- Shared cycle runner with no duplicated logic
+### 3.5.6 Pre-screening Funnel & Real-Time Polish
+
+**Priority**: Low — operational polish.
+
+- Visual funnel: Scanned → Pre-screened → Enriched → Analyzed → Bet
+- Replace 15s full-page reload with `/api/status` AJAX polling + DOM updates
+- Toast notifications for new bets
+- Market countdown timers for positions near expiry
+
+**Effort**: 4-6 hrs
+
+### Phase 3.5 Exit Criteria
+- AI cost panel shows daily spend, per-model breakdown, latency, cache stats
+- Analysis log shows probability pipeline (raw → calibrated → blended)
+- Strategy signals visible on analyses where they fired
+- Learning weights and category performance displayed
+- Backtest page shows risk metrics table
 
 ---
 
@@ -303,19 +325,22 @@ These are high-effort features that would make the system best-in-class but are 
                     LOW EFFORT              HIGH EFFORT
                     (<8 hrs)                (8+ hrs)
 
-HIGH IMPACT    [3.1] Critical bug fixes    [3.4] Walk-forward backtest
-               [3.2] Platt scaling         [4.1] WebSocket feed
-               [3.3] Market consensus      [4.6] Agentic search
-               [3.5] Shared cycle runner   [5.3] Real trade execution
+HIGH IMPACT    [3.5.1] AI Cost Panel  ✦    [3.5.2] Analysis Detail
+               [4.3] API reliability       [4.1] WebSocket feed
+               [4.4] Dashboard security    [4.6] Agentic search
+                                           [5.3] Real trade execution
 
-MEDIUM IMPACT  [4.3] API reliability       [5.1] Strategy interface
-               [4.4] Dashboard security    [4.2] Position correlation
-               [4.5] DB improvements       [5.6] Advanced risk mgmt
-               [5.4] Alembic migrations
+MEDIUM IMPACT  [3.5.4] Risk Analytics      [3.5.3] Learning Viz
+               [3.5.5] Backtest UI         [5.1] Strategy interface
+               [4.5] DB improvements       [4.2] Position correlation
+               [5.4] Alembic migrations    [5.6] Advanced risk mgmt
 
-LOW IMPACT     [5.5] Alerting              [ ] RAG pipeline
-               [5.2] Monte Carlo           [ ] Multi-platform
-               [ ] Temp ensemble diversity  [ ] NautilusTrader
+LOW IMPACT     [3.5.6] RT Polish           [ ] RAG pipeline
+               [5.5] Alerting              [ ] Multi-platform
+               [5.2] Monte Carlo           [ ] NautilusTrader
+
+✦ = next up
+Completed: 3.1, 3.2, 3.3, 3.4, 3.5
 ```
 
 ---
@@ -328,13 +353,13 @@ For detailed technical descriptions of all 30 issues from the independent review
 
 | # | Issue | Phase | Status |
 |---|-------|-------|--------|
-| 1 | Learning loop cache never reset | 3.1 | Open |
-| 2 | Backtester temporal leakage | 3.1 | Open |
-| 3 | Dashboard race conditions | 3.1 | Open |
-| 4 | Dashboard PnL mismatch | 3.1 | Open |
-| 5 | DRY violation run_sim vs dashboard | 3.5 | Open |
+| 1 | Learning loop cache never reset | 3.1 | **Done** |
+| 2 | Backtester temporal leakage | 3.1 | **Done** |
+| 3 | Dashboard race conditions | 3.1 | **Done** |
+| 4 | Dashboard PnL mismatch | 3.1 | **Done** |
+| 5 | DRY violation run_sim vs dashboard | 3.5 | **Done** |
 | 6 | API connection leak | 4.3 | Open |
 | 7 | API no retry logic | 4.3 | Open |
 | 8 | Silent exception swallowing | 4.3 | Open |
 | 9 | No dashboard authentication | 4.4 | Open |
-| 10 | Drawdown uses balance not portfolio | 3.1 | Open |
+| 10 | Drawdown uses balance not portfolio | 3.1 | **Done** |

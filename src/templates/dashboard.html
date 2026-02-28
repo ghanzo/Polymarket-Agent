@@ -264,11 +264,166 @@
         }
         .btn-close-pos:hover { opacity: 1; }
 
+        /* AI Cost & Operations Panel */
+        .ops-panel {
+            background: linear-gradient(135deg, #12121f 0%, #1a1a30 100%);
+            border: 1px solid #2a2a4a;
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+        .ops-panel h2 {
+            font-size: 16px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 2px; color: #7c5cfc; margin-bottom: 20px;
+            display: flex; align-items: center; gap: 12px;
+        }
+        .ops-grid {
+            display: grid;
+            grid-template-columns: 280px 1fr 1fr;
+            gap: 20px;
+            align-items: start;
+        }
+        /* Budget gauge */
+        .budget-gauge {
+            background: #0a0a14;
+            border: 1px solid #2a2a4a;
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+        }
+        .gauge-ring {
+            position: relative;
+            width: 140px; height: 140px;
+            margin: 0 auto 12px;
+        }
+        .gauge-ring svg { transform: rotate(-90deg); }
+        .gauge-ring circle {
+            fill: none; stroke-width: 10; cx: 70; cy: 70; r: 60;
+        }
+        .gauge-bg { stroke: #1a1a2e; }
+        .gauge-fill { stroke-linecap: round; transition: stroke-dashoffset 0.6s ease; }
+        .gauge-center {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            text-align: center;
+        }
+        .gauge-amount { font-size: 22px; font-weight: 700; color: #fff; }
+        .gauge-label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
+        .budget-limits {
+            display: flex; justify-content: space-between;
+            font-size: 10px; color: #555; margin-top: 8px; padding: 0 8px;
+        }
+        .budget-bar-track {
+            height: 6px; background: #1a1a2e; border-radius: 3px;
+            position: relative; overflow: visible; margin-top: 8px;
+        }
+        .budget-bar-fill {
+            height: 100%; border-radius: 3px; transition: width 0.5s;
+        }
+        .budget-marker {
+            position: absolute; top: -3px; width: 2px; height: 12px;
+            border-radius: 1px; transform: translateX(-1px);
+        }
+
+        /* Model cost breakdown */
+        .model-costs {
+            background: #0a0a14;
+            border: 1px solid #2a2a4a;
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .model-costs h3 {
+            font-size: 11px; color: #666; text-transform: uppercase;
+            letter-spacing: 1px; margin-bottom: 14px;
+        }
+        .cost-row {
+            display: flex; align-items: center; gap: 10px;
+            margin-bottom: 12px;
+        }
+        .cost-row:last-child { margin-bottom: 0; }
+        .cost-model-name {
+            font-size: 12px; font-weight: 600; width: 110px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .cost-bar-track {
+            flex: 1; height: 20px; background: #1a1a2e;
+            border-radius: 4px; overflow: hidden; position: relative;
+        }
+        .cost-bar-fill {
+            height: 100%; border-radius: 4px; transition: width 0.4s;
+            display: flex; align-items: center; padding-left: 8px;
+            font-size: 10px; font-weight: 600; color: #fff; min-width: 0;
+        }
+        .cost-bar-label {
+            position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+            font-size: 10px; color: #888;
+        }
+        .cost-calls {
+            font-size: 11px; color: #555; width: 60px; text-align: right;
+        }
+
+        /* Latency & cache stats */
+        .ops-stats {
+            background: #0a0a14;
+            border: 1px solid #2a2a4a;
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .ops-stats h3 {
+            font-size: 11px; color: #666; text-transform: uppercase;
+            letter-spacing: 1px; margin-bottom: 14px;
+        }
+        .latency-row {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 6px 0; border-bottom: 1px solid #1a1a2e;
+            font-size: 12px;
+        }
+        .latency-row:last-child { border-bottom: none; }
+        .latency-model { font-weight: 600; }
+        .latency-vals { display: flex; gap: 16px; }
+        .latency-val { text-align: right; }
+        .latency-val .lbl { font-size: 9px; color: #555; text-transform: uppercase; }
+        .latency-val .num { font-weight: 600; }
+        .cache-stats-row {
+            display: flex; gap: 16px; margin-top: 16px;
+            padding-top: 14px; border-top: 1px solid #2a2a4a;
+        }
+        .cache-stat {
+            flex: 1; text-align: center;
+        }
+        .cache-stat .num {
+            font-size: 20px; font-weight: 700; color: #fff;
+        }
+        .cache-stat .lbl {
+            font-size: 9px; color: #555; text-transform: uppercase;
+            letter-spacing: 1px; margin-top: 2px;
+        }
+        /* Funnel bar */
+        .funnel-bar {
+            display: flex; align-items: center; gap: 0;
+            margin-bottom: 24px;
+            background: #12121f; border: 1px solid #2a2a4a;
+            border-radius: 12px; padding: 12px 16px; font-size: 12px;
+        }
+        .funnel-step {
+            display: flex; align-items: center; gap: 6px;
+            color: #888;
+        }
+        .funnel-step .funnel-num {
+            font-size: 18px; font-weight: 700; color: #fff;
+        }
+        .funnel-arrow {
+            color: #333; margin: 0 10px; font-size: 16px;
+        }
+
+        @media (max-width: 1100px) {
+            .ops-grid { grid-template-columns: 1fr; }
+        }
         @media (max-width: 900px) {
             .two-col { grid-template-columns: 1fr; }
             .container { padding: 16px; }
             .leaderboard-grid { grid-template-columns: 1fr; }
             .settings-grid { grid-template-columns: 1fr; }
+            .funnel-bar { flex-wrap: wrap; gap: 8px; }
         }
     </style>
 </head>
@@ -287,9 +442,9 @@
     <div class="container">
         <div class="info-bar">
             <span>Cycle: {{ sim.cycle_count }}</span>
-            <span>Markets scanned: {{ sim.markets_scanned }}</span>
             <span>Sizing: Quarter-Kelly</span>
             <span>Max bet: {{ "%.0f"|format(config.max_bet_pct * 100) }}%</span>
+            <span>AI spend: ${{ "%.2f"|format(ai_costs.daily_total) }} / ${{ "%.2f"|format(config.ai_budget_hard_cap) }}</span>
             {% if sim.last_run %}<span>Last run: <span class="relative-time" data-ts="{{ sim.last_run }}"></span></span>{% endif %}
             {% if sim.last_error %}<span style="color: #f87171;">Error: {{ sim.last_error[:60] }}</span>{% endif %}
         </div>
@@ -359,6 +514,169 @@
                     <label>Max Position Days <span class="setting-value" id="val_days">{{ config.max_position_days }}</span></label>
                     <input type="range" min="7" max="30" step="1" value="{{ config.max_position_days }}"
                            oninput="sliderChange('SIM_MAX_POSITION_DAYS', this.value, 'val_days')">
+                </div>
+            </div>
+        </div>
+
+        <!-- PIPELINE FUNNEL -->
+        {% set total_bets = open_bets|length + closed_bets|length %}
+        <div class="funnel-bar">
+            <div class="funnel-step">
+                <span class="funnel-num">{{ sim.markets_scanned }}</span> Scanned
+            </div>
+            <span class="funnel-arrow">&#9654;</span>
+            <div class="funnel-step">
+                <span class="funnel-num">{{ sim.get('markets_prescreened', sim.markets_scanned) }}</span> Pre-screened
+            </div>
+            <span class="funnel-arrow">&#9654;</span>
+            <div class="funnel-step">
+                <span class="funnel-num">{{ analyses|length }}</span> Analyzed
+            </div>
+            <span class="funnel-arrow">&#9654;</span>
+            <div class="funnel-step">
+                <span class="funnel-num">{{ total_bets }}</span> Bets
+            </div>
+            <span class="funnel-arrow">&#9654;</span>
+            <div class="funnel-step">
+                <span class="funnel-num">{{ open_bets|length }}</span> Open
+            </div>
+        </div>
+
+        <!-- AI COST & OPERATIONS -->
+        {% set spent = ai_costs.daily_total %}
+        {% set hard_cap = config.ai_budget_hard_cap %}
+        {% set soft_cap = config.ai_budget_soft_cap %}
+        {% set spend_pct = (spent / hard_cap * 100) if hard_cap > 0 else 0 %}
+        {% set soft_pct = (soft_cap / hard_cap * 100) if hard_cap > 0 else 0 %}
+        <div class="ops-panel">
+            <h2>
+                AI Cost &amp; Operations
+                <span class="badge">${{ "%.2f"|format(spent) }} today</span>
+            </h2>
+            <div class="ops-grid">
+                <!-- Budget Gauge -->
+                <div class="budget-gauge">
+                    {% set circumference = 376.99 %}
+                    {% set dash_offset = circumference * (1 - [spend_pct / 100, 1.0]|min) %}
+                    {% if spend_pct >= 100 %}
+                        {% set gauge_color = '#f87171' %}
+                    {% elif spend_pct >= soft_pct %}
+                        {% set gauge_color = '#facc15' %}
+                    {% else %}
+                        {% set gauge_color = '#4ade80' %}
+                    {% endif %}
+                    <div class="gauge-ring">
+                        <svg width="140" height="140">
+                            <circle class="gauge-bg" r="60" cx="70" cy="70" stroke-dasharray="{{ circumference }}" stroke-dashoffset="0"/>
+                            <circle class="gauge-fill" r="60" cx="70" cy="70"
+                                    stroke="{{ gauge_color }}"
+                                    stroke-dasharray="{{ circumference }}"
+                                    stroke-dashoffset="{{ dash_offset }}"/>
+                        </svg>
+                        <div class="gauge-center">
+                            <div class="gauge-amount">${{ "%.2f"|format(spent) }}</div>
+                            <div class="gauge-label">of ${{ "%.2f"|format(hard_cap) }}</div>
+                        </div>
+                    </div>
+                    <div class="budget-bar-track">
+                        <div class="budget-bar-fill" style="width: {{ [spend_pct, 100]|min }}%; background: {{ gauge_color }};"></div>
+                        <div class="budget-marker" style="left: {{ soft_pct }}%; background: #facc15;" title="Soft cap ${{ '%.2f'|format(soft_cap) }}"></div>
+                        <div class="budget-marker" style="left: 100%; background: #f87171;" title="Hard cap ${{ '%.2f'|format(hard_cap) }}"></div>
+                    </div>
+                    <div class="budget-limits">
+                        <span>$0</span>
+                        <span style="color: #facc15;">Soft ${{ "%.2f"|format(soft_cap) }}</span>
+                        <span style="color: #f87171;">Hard ${{ "%.2f"|format(hard_cap) }}</span>
+                    </div>
+                </div>
+
+                <!-- Per-Model Cost Breakdown -->
+                <div class="model-costs">
+                    <h3>Cost by Model</h3>
+                    {% set max_cost = ai_costs.by_model.values()|max if ai_costs.by_model else 0.01 %}
+                    {% for model, cost in ai_costs.by_model.items() %}
+                    {% set calls = ai_costs.calls.get(model, 0) %}
+                    {% set bar_w = (cost / max_cost * 100) if max_cost > 0 else 0 %}
+                    {% set model_short = model.split(':')[0] if ':' in model else model %}
+                    <div class="cost-row">
+                        {% set _tc = {'claude': '#7c5cfc', 'grok': '#f4364c', 'gemini': '#4285f4', 'ensemble': '#fbbf24'} %}
+                        <span class="cost-model-name" style="color: {{ _tc.get(model_short, '#888') }};">
+                            {{ model_short }}
+                        </span>
+                        <div class="cost-bar-track">
+                            <div class="cost-bar-fill" style="width: {{ [bar_w, 3]|max }}%; background: linear-gradient(90deg, #7c5cfc44, #7c5cfcaa);">
+                                {% if bar_w > 25 %}${{ "%.4f"|format(cost) }}{% endif %}
+                            </div>
+                            {% if bar_w <= 25 %}
+                            <span class="cost-bar-label">${{ "%.4f"|format(cost) }}</span>
+                            {% endif %}
+                        </div>
+                        <span class="cost-calls">{{ calls }} calls</span>
+                    </div>
+                    {% endfor %}
+                    {% if not ai_costs.by_model %}
+                    <div style="color: #555; font-size: 12px; text-align: center; padding: 20px;">
+                        No API calls yet today
+                    </div>
+                    {% endif %}
+                </div>
+
+                <!-- Latency & Cache -->
+                <div class="ops-stats">
+                    <h3>API Latency</h3>
+                    {% for model, stats in ai_costs.latency.items() %}
+                    {% set model_short = model.split(':')[0] if ':' in model else model %}
+                    <div class="latency-row">
+                        <span class="latency-model">{{ model_short }}</span>
+                        <div class="latency-vals">
+                            <div class="latency-val">
+                                <div class="lbl">Avg</div>
+                                <div class="num {{ 'negative' if stats.avg > 10 else 'positive' if stats.avg < 5 else '' }}">
+                                    {{ "%.1f"|format(stats.avg) }}s
+                                </div>
+                            </div>
+                            <div class="latency-val">
+                                <div class="lbl">P95</div>
+                                <div class="num {{ 'negative' if stats.p95 > 15 else '' }}">
+                                    {{ "%.1f"|format(stats.p95) }}s
+                                </div>
+                            </div>
+                            <div class="latency-val">
+                                <div class="lbl">Calls</div>
+                                <div class="num">{{ stats.count }}</div>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                    {% if not ai_costs.latency %}
+                    <div style="color: #555; font-size: 12px; text-align: center; padding: 12px;">
+                        No latency data yet
+                    </div>
+                    {% endif %}
+
+                    <!-- Cache Stats -->
+                    <div class="cache-stats-row">
+                        <div class="cache-stat">
+                            <div class="num positive">{{ ai_costs.cache.hits }}</div>
+                            <div class="lbl">Cache Hits</div>
+                        </div>
+                        <div class="cache-stat">
+                            <div class="num">{{ ai_costs.cache.misses }}</div>
+                            <div class="lbl">Misses</div>
+                        </div>
+                        <div class="cache-stat">
+                            <div class="num" style="color: {{ '#4ade80' if ai_costs.cache.hit_rate > 0.5 else '#facc15' if ai_costs.cache.hit_rate > 0.2 else '#888' }};">
+                                {{ "%.0f"|format(ai_costs.cache.hit_rate * 100) }}%
+                            </div>
+                            <div class="lbl">Hit Rate</div>
+                        </div>
+                        <div class="cache-stat">
+                            <div class="num" style="color: {{ '#4ade80' if ai_costs.budget_remaining > soft_cap else '#facc15' if ai_costs.budget_remaining > 0 else '#f87171' }};">
+                                ${{ "%.2f"|format(ai_costs.budget_remaining) }}
+                            </div>
+                            <div class="lbl">Remaining</div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
