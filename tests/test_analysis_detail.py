@@ -314,7 +314,7 @@ class TestEnrichAnalysis:
         _enrich_analysis = _get_enrich_fn()
         a = {"extras": {}}
         result = _enrich_analysis(a)
-        assert result["prob_pipeline"] is not None  # pipeline has raw=None
+        assert result["prob_pipeline"] is None  # empty extras → no pipeline
         assert result["signals"] == []
         assert result["model_agreement"] is None
         assert result["debate_info"] is None
