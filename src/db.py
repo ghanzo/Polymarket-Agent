@@ -520,7 +520,7 @@ def is_analysis_on_cooldown(trader_id: str, market_id: str, cooldown_hours: floa
             cur.execute(
                 "SELECT 1 FROM analysis_log "
                 "WHERE trader_id = %s AND market_id = %s "
-                "AND created_at > NOW() - make_interval(hours := %s) "
+                "AND created_at > NOW() - interval '1 hour' * %s "
                 "LIMIT 1",
                 (trader_id, market_id, cooldown_hours),
             )
@@ -558,7 +558,7 @@ def get_cached_search(query_hash: str, ttl_hours: int = 20) -> list[dict] | None
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                "SELECT results FROM search_cache WHERE query_hash = %s AND created_at > NOW() - make_interval(hours := %s)",
+                "SELECT results FROM search_cache WHERE query_hash = %s AND created_at > NOW() - interval '1 hour' * %s",
                 (query_hash, ttl_hours),
             )
             row = cur.fetchone()
@@ -713,14 +713,14 @@ def get_portfolio_history(trader_id: str | None = None, hours: int = 72) -> list
                 cur.execute("""
                     SELECT trader_id, portfolio_value, created_at
                     FROM portfolio_snapshots
-                    WHERE trader_id = %s AND created_at > NOW() - make_interval(hours := %s)
+                    WHERE trader_id = %s AND created_at > NOW() - interval '1 hour' * %s
                     ORDER BY created_at
                 """, (trader_id, hours))
             else:
                 cur.execute("""
                     SELECT trader_id, portfolio_value, created_at
                     FROM portfolio_snapshots
-                    WHERE created_at > NOW() - make_interval(hours := %s)
+                    WHERE created_at > NOW() - interval '1 hour' * %s
                     ORDER BY created_at
                 """, (hours,))
             return [dict(r) for r in cur.fetchall()]
