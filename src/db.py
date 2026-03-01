@@ -39,194 +39,209 @@ def init_db():
     """Create tables and initialize per-trader portfolios."""
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS portfolio (
-                    trader_id TEXT PRIMARY KEY,
-                    balance DOUBLE PRECISION NOT NULL,
-                    total_bets INTEGER NOT NULL DEFAULT 0,
-                    wins INTEGER NOT NULL DEFAULT 0,
-                    losses INTEGER NOT NULL DEFAULT 0,
-                    realized_pnl DOUBLE PRECISION NOT NULL DEFAULT 0.0
-                );
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS bets (
-                    id SERIAL PRIMARY KEY,
-                    trader_id TEXT NOT NULL,
-                    market_id TEXT NOT NULL,
-                    market_question TEXT NOT NULL,
-                    side TEXT NOT NULL,
-                    amount DOUBLE PRECISION NOT NULL,
-                    entry_price DOUBLE PRECISION NOT NULL,
-                    shares DOUBLE PRECISION NOT NULL,
-                    token_id TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'OPEN',
-                    current_price DOUBLE PRECISION,
-                    exit_price DOUBLE PRECISION,
-                    pnl DOUBLE PRECISION NOT NULL DEFAULT 0.0,
-                    placed_at TIMESTAMP NOT NULL DEFAULT NOW(),
-                    resolved_at TIMESTAMP
-                );
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS analysis_log (
-                    id SERIAL PRIMARY KEY,
-                    trader_id TEXT NOT NULL,
-                    market_id TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    recommendation TEXT NOT NULL,
-                    confidence DOUBLE PRECISION NOT NULL,
-                    estimated_probability DOUBLE PRECISION,
-                    reasoning TEXT NOT NULL,
-                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
-                );
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS backtest_results (
-                    id SERIAL PRIMARY KEY,
-                    run_id TEXT NOT NULL,
-                    trader_id TEXT NOT NULL,
-                    market_id TEXT NOT NULL,
-                    market_question TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    recommendation TEXT NOT NULL,
-                    estimated_probability DOUBLE PRECISION NOT NULL,
-                    confidence DOUBLE PRECISION NOT NULL,
-                    actual_outcome_yes BOOLEAN NOT NULL,
-                    market_price DOUBLE PRECISION NOT NULL,
-                    was_correct BOOLEAN NOT NULL,
-                    theoretical_pnl DOUBLE PRECISION NOT NULL,
-                    reasoning TEXT,
-                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
-                );
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS backtest_runs (
-                    id TEXT PRIMARY KEY,
-                    days INTEGER NOT NULL,
-                    markets_tested INTEGER NOT NULL,
-                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
-                );
-            """)
-            # Schema migrations (idempotent)
-            cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS event_id TEXT;")
-            cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS peak_price DOUBLE PRECISION;")
-            cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS category TEXT;")
-            cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION DEFAULT 0.0;")
-            cur.execute("ALTER TABLE analysis_log ADD COLUMN IF NOT EXISTS category TEXT;")
-            cur.execute("ALTER TABLE analysis_log ADD COLUMN IF NOT EXISTS extras JSONB;")
-            cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS slippage_bps DOUBLE PRECISION;")
-            cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS midpoint_at_entry DOUBLE PRECISION;")
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_analysis_log_cooldown
-                    ON analysis_log (trader_id, market_id, created_at DESC);
-            """)
-
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS search_cache (
-                    query_hash TEXT PRIMARY KEY,
-                    query_text TEXT NOT NULL,
-                    results JSONB NOT NULL,
-                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
-                );
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS portfolio_snapshots (
-                    id SERIAL PRIMARY KEY,
-                    trader_id TEXT NOT NULL,
-                    portfolio_value DOUBLE PRECISION NOT NULL,
-                    balance DOUBLE PRECISION NOT NULL,
-                    unrealized_pnl DOUBLE PRECISION NOT NULL,
-                    total_bets INTEGER NOT NULL,
-                    wins INTEGER NOT NULL,
-                    losses INTEGER NOT NULL,
-                    realized_pnl DOUBLE PRECISION NOT NULL,
-                    cycle_number INTEGER NOT NULL,
-                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
-                );
-            """)
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_snapshots_trader_time
-                    ON portfolio_snapshots (trader_id, created_at);
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS performance_reviews (
-                    id SERIAL PRIMARY KEY,
-                    trader_id TEXT NOT NULL,
-                    total_resolved INTEGER NOT NULL,
-                    correct INTEGER NOT NULL,
-                    accuracy DOUBLE PRECISION NOT NULL,
-                    brier_score DOUBLE PRECISION,
-                    total_pnl DOUBLE PRECISION NOT NULL,
-                    avg_confidence DOUBLE PRECISION,
-                    cycle_number INTEGER,
-                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
-                );
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS calibration (
-                    trader_id TEXT NOT NULL,
-                    bucket_min DOUBLE PRECISION NOT NULL,
-                    bucket_max DOUBLE PRECISION NOT NULL,
-                    predicted_center DOUBLE PRECISION NOT NULL,
-                    actual_rate DOUBLE PRECISION NOT NULL,
-                    sample_count INTEGER NOT NULL,
-                    computed_at TIMESTAMP NOT NULL DEFAULT NOW(),
-                    PRIMARY KEY (trader_id, bucket_min)
-                );
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS runtime_config (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL,
-                    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-                );
-            """)
-            # Commit schema migrations before constraint block — constraint
+            _create_core_tables(cur)
+            _run_schema_migrations(cur)
+            _create_auxiliary_tables(cur)
+            # Commit schema changes before constraint block — constraint
             # rollbacks must not undo column additions above.
             conn.commit()
-
-            # Data integrity constraints (idempotent)
-            for stmt in [
-                "ALTER TABLE bets ADD CONSTRAINT IF NOT EXISTS chk_amount_positive CHECK (amount > 0)",
-                "ALTER TABLE bets ADD CONSTRAINT IF NOT EXISTS chk_price_range CHECK (entry_price BETWEEN 0 AND 1)",
-                "ALTER TABLE bets ADD CONSTRAINT IF NOT EXISTS chk_shares_positive CHECK (shares > 0)",
-                "ALTER TABLE portfolio ADD CONSTRAINT IF NOT EXISTS chk_balance_non_negative CHECK (balance >= 0)",
-                "ALTER TABLE analysis_log ADD CONSTRAINT IF NOT EXISTS chk_confidence_range CHECK (confidence BETWEEN 0 AND 1)",
-                "ALTER TABLE analysis_log ADD CONSTRAINT IF NOT EXISTS chk_est_prob_range CHECK (estimated_probability BETWEEN 0 AND 1)",
-            ]:
-                try:
-                    cur.execute(stmt)
-                except Exception:
-                    conn.rollback()  # Constraint may already exist in older PG syntax
-
-            # Foreign keys (idempotent — skip if exists)
-            for stmt in [
-                """DO $$ BEGIN
-                    ALTER TABLE bets ADD CONSTRAINT fk_bets_portfolio
-                        FOREIGN KEY (trader_id) REFERENCES portfolio(trader_id);
-                EXCEPTION WHEN duplicate_object THEN NULL;
-                END $$""",
-                """DO $$ BEGIN
-                    ALTER TABLE portfolio_snapshots ADD CONSTRAINT fk_snapshots_portfolio
-                        FOREIGN KEY (trader_id) REFERENCES portfolio(trader_id);
-                EXCEPTION WHEN duplicate_object THEN NULL;
-                END $$""",
-                """DO $$ BEGIN
-                    ALTER TABLE performance_reviews ADD CONSTRAINT fk_reviews_portfolio
-                        FOREIGN KEY (trader_id) REFERENCES portfolio(trader_id);
-                EXCEPTION WHEN duplicate_object THEN NULL;
-                END $$""",
-            ]:
-                cur.execute(stmt)
-
-            # Initialize portfolios for each trader
+        _add_constraints_and_keys(conn)
+        with conn.cursor() as cur:
             for tid in TRADER_IDS:
                 cur.execute(
                     "INSERT INTO portfolio (trader_id, balance) VALUES (%s, %s) ON CONFLICT (trader_id) DO NOTHING",
                     (tid, config.SIM_STARTING_BALANCE),
                 )
         conn.commit()
+
+
+def _create_core_tables(cur):
+    """Create portfolio, bets, analysis_log, and backtest tables."""
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS portfolio (
+            trader_id TEXT PRIMARY KEY,
+            balance DOUBLE PRECISION NOT NULL,
+            total_bets INTEGER NOT NULL DEFAULT 0,
+            wins INTEGER NOT NULL DEFAULT 0,
+            losses INTEGER NOT NULL DEFAULT 0,
+            realized_pnl DOUBLE PRECISION NOT NULL DEFAULT 0.0
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS bets (
+            id SERIAL PRIMARY KEY,
+            trader_id TEXT NOT NULL,
+            market_id TEXT NOT NULL,
+            market_question TEXT NOT NULL,
+            side TEXT NOT NULL,
+            amount DOUBLE PRECISION NOT NULL,
+            entry_price DOUBLE PRECISION NOT NULL,
+            shares DOUBLE PRECISION NOT NULL,
+            token_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'OPEN',
+            current_price DOUBLE PRECISION,
+            exit_price DOUBLE PRECISION,
+            pnl DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+            placed_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            resolved_at TIMESTAMP
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS analysis_log (
+            id SERIAL PRIMARY KEY,
+            trader_id TEXT NOT NULL,
+            market_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            recommendation TEXT NOT NULL,
+            confidence DOUBLE PRECISION NOT NULL,
+            estimated_probability DOUBLE PRECISION,
+            reasoning TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS backtest_results (
+            id SERIAL PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            trader_id TEXT NOT NULL,
+            market_id TEXT NOT NULL,
+            market_question TEXT NOT NULL,
+            model TEXT NOT NULL,
+            recommendation TEXT NOT NULL,
+            estimated_probability DOUBLE PRECISION NOT NULL,
+            confidence DOUBLE PRECISION NOT NULL,
+            actual_outcome_yes BOOLEAN NOT NULL,
+            market_price DOUBLE PRECISION NOT NULL,
+            was_correct BOOLEAN NOT NULL,
+            theoretical_pnl DOUBLE PRECISION NOT NULL,
+            reasoning TEXT,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS backtest_runs (
+            id TEXT PRIMARY KEY,
+            days INTEGER NOT NULL,
+            markets_tested INTEGER NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+    """)
+
+
+def _run_schema_migrations(cur):
+    """Run idempotent ALTER TABLE migrations."""
+    cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS event_id TEXT;")
+    cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS peak_price DOUBLE PRECISION;")
+    cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS category TEXT;")
+    cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION DEFAULT 0.0;")
+    cur.execute("ALTER TABLE analysis_log ADD COLUMN IF NOT EXISTS category TEXT;")
+    cur.execute("ALTER TABLE analysis_log ADD COLUMN IF NOT EXISTS extras JSONB;")
+    cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS slippage_bps DOUBLE PRECISION;")
+    cur.execute("ALTER TABLE bets ADD COLUMN IF NOT EXISTS midpoint_at_entry DOUBLE PRECISION;")
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_analysis_log_cooldown
+            ON analysis_log (trader_id, market_id, created_at DESC);
+    """)
+
+
+def _create_auxiliary_tables(cur):
+    """Create search_cache, snapshots, performance, calibration, and runtime_config tables."""
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS search_cache (
+            query_hash TEXT PRIMARY KEY,
+            query_text TEXT NOT NULL,
+            results JSONB NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+            id SERIAL PRIMARY KEY,
+            trader_id TEXT NOT NULL,
+            portfolio_value DOUBLE PRECISION NOT NULL,
+            balance DOUBLE PRECISION NOT NULL,
+            unrealized_pnl DOUBLE PRECISION NOT NULL,
+            total_bets INTEGER NOT NULL,
+            wins INTEGER NOT NULL,
+            losses INTEGER NOT NULL,
+            realized_pnl DOUBLE PRECISION NOT NULL,
+            cycle_number INTEGER NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_snapshots_trader_time
+            ON portfolio_snapshots (trader_id, created_at);
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS performance_reviews (
+            id SERIAL PRIMARY KEY,
+            trader_id TEXT NOT NULL,
+            total_resolved INTEGER NOT NULL,
+            correct INTEGER NOT NULL,
+            accuracy DOUBLE PRECISION NOT NULL,
+            brier_score DOUBLE PRECISION,
+            total_pnl DOUBLE PRECISION NOT NULL,
+            avg_confidence DOUBLE PRECISION,
+            cycle_number INTEGER,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS calibration (
+            trader_id TEXT NOT NULL,
+            bucket_min DOUBLE PRECISION NOT NULL,
+            bucket_max DOUBLE PRECISION NOT NULL,
+            predicted_center DOUBLE PRECISION NOT NULL,
+            actual_rate DOUBLE PRECISION NOT NULL,
+            sample_count INTEGER NOT NULL,
+            computed_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (trader_id, bucket_min)
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS runtime_config (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+    """)
+
+
+def _add_constraints_and_keys(conn):
+    """Add CHECK constraints and foreign keys (separate transaction per statement)."""
+    with conn.cursor() as cur:
+        for stmt in [
+            "ALTER TABLE bets ADD CONSTRAINT IF NOT EXISTS chk_amount_positive CHECK (amount > 0)",
+            "ALTER TABLE bets ADD CONSTRAINT IF NOT EXISTS chk_price_range CHECK (entry_price BETWEEN 0 AND 1)",
+            "ALTER TABLE bets ADD CONSTRAINT IF NOT EXISTS chk_shares_positive CHECK (shares > 0)",
+            "ALTER TABLE portfolio ADD CONSTRAINT IF NOT EXISTS chk_balance_non_negative CHECK (balance >= 0)",
+            "ALTER TABLE analysis_log ADD CONSTRAINT IF NOT EXISTS chk_confidence_range CHECK (confidence BETWEEN 0 AND 1)",
+            "ALTER TABLE analysis_log ADD CONSTRAINT IF NOT EXISTS chk_est_prob_range CHECK (estimated_probability BETWEEN 0 AND 1)",
+        ]:
+            try:
+                cur.execute(stmt)
+            except Exception:
+                conn.rollback()
+
+        for stmt in [
+            """DO $$ BEGIN
+                ALTER TABLE bets ADD CONSTRAINT fk_bets_portfolio
+                    FOREIGN KEY (trader_id) REFERENCES portfolio(trader_id);
+            EXCEPTION WHEN duplicate_object THEN NULL;
+            END $$""",
+            """DO $$ BEGIN
+                ALTER TABLE portfolio_snapshots ADD CONSTRAINT fk_snapshots_portfolio
+                    FOREIGN KEY (trader_id) REFERENCES portfolio(trader_id);
+            EXCEPTION WHEN duplicate_object THEN NULL;
+            END $$""",
+            """DO $$ BEGIN
+                ALTER TABLE performance_reviews ADD CONSTRAINT fk_reviews_portfolio
+                    FOREIGN KEY (trader_id) REFERENCES portfolio(trader_id);
+            EXCEPTION WHEN duplicate_object THEN NULL;
+            END $$""",
+        ]:
+            cur.execute(stmt)
 
 
 def get_portfolio(trader_id: str) -> Portfolio:

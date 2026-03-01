@@ -119,11 +119,11 @@ class TestClassifyMarket:
     def test_sports(self):
         assert classify_market("Will the Lakers win the NBA championship?") == "sports"
 
-    def test_finance(self):
-        assert classify_market("Will the Fed raise interest rates?") == "finance"
+    def test_economics(self):
+        assert classify_market("Will the Fed raise interest rates?") == "economics"
 
-    def test_science_tech(self):
-        assert classify_market("Will the FDA approve the new drug?") == "science_tech"
+    def test_science(self):
+        assert classify_market("Will the FDA approve the new drug?") == "science"
 
     def test_general_no_match(self):
         assert classify_market("Will it rain tomorrow?") == "general"

@@ -23,6 +23,7 @@ from src.prescreener import (
     HeuristicScorer,
     MarketPreScreener,
 )
+from src.prompts import MARKET_CATEGORIES
 
 
 def _make_market(**overrides) -> Market:

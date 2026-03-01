@@ -22,28 +22,9 @@ from pathlib import Path
 
 from src.config import config
 from src.models import Market
+from src.prompts import MARKET_CATEGORIES as CATEGORY_KEYWORDS
 
 logger = logging.getLogger("prescreener")
-
-# Category keywords for one-hot encoding
-CATEGORY_KEYWORDS = {
-    "politics": ["president", "election", "congress", "senate", "governor", "vote",
-                 "democrat", "republican", "trump", "biden", "party", "mayor"],
-    "crypto": ["bitcoin", "btc", "ethereum", "eth", "crypto", "token", "blockchain",
-               "solana", "sol", "dogecoin"],
-    "economics": ["fed", "gdp", "inflation", "recession", "interest rate", "unemployment",
-                  "cpi", "jobs", "treasury", "tariff"],
-    "sports": ["nba", "nfl", "mlb", "nhl", "ufc", "soccer", "football", "basketball",
-               "baseball", "championship", "super bowl", "world cup", "match"],
-    "tech": ["ai", "artificial intelligence", "openai", "google", "apple", "tesla",
-             "spacex", "launch", "ipo", "acquisition"],
-    "science": ["fda", "approval", "vaccine", "trial", "study", "nasa", "climate",
-                "earthquake", "hurricane"],
-    "entertainment": ["oscar", "grammy", "emmy", "movie", "album", "box office",
-                      "streaming", "netflix", "disney"],
-    "geopolitics": ["war", "ukraine", "russia", "china", "nato", "sanctions",
-                    "ceasefire", "nuclear", "military"],
-}
 
 
 def extract_features(market: Market) -> dict[str, float]:

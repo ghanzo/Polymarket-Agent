@@ -191,18 +191,28 @@ Respond with ONLY valid JSON:
 
 MARKET_CATEGORIES = {
     "crypto": ["bitcoin", "ethereum", "crypto", "btc", "eth", "solana", "defi",
-               "blockchain", "token", "coinbase", "binance", "altcoin", "memecoin"],
+               "blockchain", "token", "coinbase", "binance", "altcoin", "memecoin",
+               "dogecoin"],
     "politics": ["president", "election", "trump", "congress", "senate", "governor",
                  "democrat", "republican", "vote", "ballot", "poll", "impeach",
-                 "supreme court", "legislation", "bill", "veto", "biden", "desantis"],
+                 "supreme court", "legislation", "bill", "veto", "biden", "desantis",
+                 "party", "mayor"],
     "sports": ["game", "match", "team", "championship", "league", "playoff",
                "winner", " vs ", "nfl", "nba", "mlb", "nhl", "world cup", "super bowl",
-               "tournament", "season", "points", "goals", "o/u"],
-    "finance": ["stock", "s&p", "nasdaq", "dow", "fed ", "interest rate",
-                "gdp", "inflation", "recession", "treasury", "market cap", "ipo"],
-    "science_tech": [" ai ", "model", "launch", "spacex", "fda", "vaccine", "climate",
-                     "gpt", "nvidia", "apple", "google", "microsoft", "release",
-                     "approval", "drug"],
+               "tournament", "season", "points", "goals", "o/u", "ufc", "soccer",
+               "football", "basketball", "baseball"],
+    "economics": ["stock", "s&p", "nasdaq", "dow", "fed", "interest rate",
+                  "gdp", "inflation", "recession", "treasury", "market cap", "ipo",
+                  "unemployment", "cpi", "jobs", "tariff"],
+    "tech": [" ai ", "artificial intelligence", "openai", "google", "apple", "tesla",
+             "spacex", "launch", "ipo", "acquisition", "gpt", "nvidia", "microsoft",
+             "release"],
+    "science": ["fda", "approval", "vaccine", "trial", "study", "nasa", "climate",
+                "earthquake", "hurricane", "drug"],
+    "entertainment": ["oscar", "grammy", "emmy", "movie", "album", "box office",
+                      "streaming", "netflix", "disney"],
+    "geopolitics": ["war", "ukraine", "russia", "china", "nato", "sanctions",
+                    "ceasefire", "nuclear", "military"],
 }
 
 CATEGORY_INSTRUCTIONS = {
@@ -227,19 +237,30 @@ CATEGORY_INSTRUCTIONS = {
 - Account for injury reports and rest days
 - Bookmaker lines are highly efficient — require strong evidence to bet against them""",
 
-    "finance": """
-## Category Guidance: Financial Markets
+    "economics": """
+## Category Guidance: Economics
 - Examine macro indicators and Fed policy trajectory
 - Consider consensus forecasts and how often they prove accurate
 - Look at historical base rates for similar economic milestones
 - Factor in uncertainty already priced into related assets""",
 
-    "science_tech": """
-## Category Guidance: Science/Technology
-- For regulatory/FDA: use historical approval rates by stage
+    "tech": """
+## Category Guidance: Technology
 - For product launches: company track record matters most
 - For AI milestones: progress is faster than expected but slower than press suggests
-- Distinguish official announcements from speculation""",
+- Distinguish official announcements from speculation
+- Consider competitive dynamics and market positioning""",
+
+    "science": """
+## Category Guidance: Science
+- For regulatory/FDA: use historical approval rates by stage
+- For clinical trials: phase success rates are well-documented base rates
+- For space launches: check mission history and weather constraints
+- Distinguish peer-reviewed findings from pre-prints and press coverage""",
+
+    "entertainment": "",
+
+    "geopolitics": "",
 
     "general": "",
 }
@@ -248,7 +269,7 @@ CATEGORY_INSTRUCTIONS = {
 def classify_market(question: str) -> str:
     """Classify a market question into a category by keyword matching."""
     q = question.lower()
-    for category in ["crypto", "politics", "sports", "science_tech", "finance"]:
+    for category in MARKET_CATEGORIES:
         if any(kw in q for kw in MARKET_CATEGORIES[category]):
             return category
     return "general"

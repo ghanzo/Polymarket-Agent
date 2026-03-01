@@ -34,22 +34,10 @@ class Simulator:
             if open_in_event >= config.SIM_MAX_BETS_PER_EVENT:
                 return None
 
+        if not self._check_risk_limits():
+            return None
+
         portfolio = db.get_portfolio(self.trader_id)
-
-        # Portfolio-level max drawdown check (use total value, not just cash)
-        drawdown_floor = config.SIM_STARTING_BALANCE * (1 - config.SIM_MAX_DRAWDOWN)
-        if portfolio.portfolio_value < drawdown_floor:
-            logger.warning("Max drawdown reached (%.0f%%), pausing trading for %s",
-                           config.SIM_MAX_DRAWDOWN * 100, self.trader_id)
-            return None
-
-        # Daily loss limit check
-        daily_pnl = db.get_daily_realized_pnl(self.trader_id)
-        daily_loss_limit = config.SIM_STARTING_BALANCE * config.SIM_MAX_DAILY_LOSS
-        if daily_pnl < -daily_loss_limit:
-            logger.warning("Daily loss limit reached ($%.2f), pausing %s",
-                           abs(daily_pnl), self.trader_id)
-            return None
         midpoint = market.midpoint or 0.5
         spread = market.spread or 0.0
 
@@ -64,9 +52,87 @@ class Simulator:
         if not token_id:
             return None
 
-        # Apply calibration adjustment if available
+        # Probability adjustment pipeline
+        extras: dict = {}
+        est_prob = self._apply_probability_adjustments(analysis, market, side, midpoint, extras)
+
+        # Reject if edge too small
+        edge = abs(est_prob - midpoint)
+        if edge < config.SIM_MIN_EDGE:
+            return None
+
+        # Kelly criterion bet sizing (spread-adjusted)
+        bet_amount = kelly_size(
+            estimated_prob=est_prob,
+            market_price=midpoint,
+            side=side,
+            bankroll=portfolio.balance,
+            max_bet_pct=config.SIM_MAX_BET_PCT,
+            fraction=config.SIM_KELLY_FRACTION,
+            spread=spread,
+        )
+
+        # Minimum $1 bet, cap at balance
+        if bet_amount < 1.0:
+            return None
+        bet_amount = min(bet_amount, portfolio.balance)
+
+        # Compute slippage-adjusted entry price
+        entry_price, slippage_bps = self._compute_entry_and_slippage(
+            market, side, bet_amount, midpoint, spread, extras,
+        )
+        if entry_price is None:
+            return None
+
+        extras["final_est_prob"] = round(est_prob, 4)
+        analysis.extras = extras
+
+        shares = bet_amount / entry_price
+
+        bet = Bet(
+            id=None,
+            trader_id=self.trader_id,
+            market_id=market.id,
+            market_question=market.question,
+            side=side,
+            amount=bet_amount,
+            entry_price=entry_price,
+            shares=shares,
+            token_id=token_id,
+            event_id=market.event_id,
+            category=analysis.category,
+            confidence=analysis.confidence,
+            slippage_bps=round(slippage_bps, 1),
+            midpoint_at_entry=midpoint,
+        )
+
+        bet.id = db.save_bet(bet)
+        return bet
+
+    def _check_risk_limits(self) -> bool:
+        """Check portfolio drawdown and daily loss limits. Returns True if OK to trade."""
+        portfolio = db.get_portfolio(self.trader_id)
+
+        drawdown_floor = config.SIM_STARTING_BALANCE * (1 - config.SIM_MAX_DRAWDOWN)
+        if portfolio.portfolio_value < drawdown_floor:
+            logger.warning("Max drawdown reached (%.0f%%), pausing trading for %s",
+                           config.SIM_MAX_DRAWDOWN * 100, self.trader_id)
+            return False
+
+        daily_pnl = db.get_daily_realized_pnl(self.trader_id)
+        daily_loss_limit = config.SIM_STARTING_BALANCE * config.SIM_MAX_DAILY_LOSS
+        if daily_pnl < -daily_loss_limit:
+            logger.warning("Daily loss limit reached ($%.2f), pausing %s",
+                           abs(daily_pnl), self.trader_id)
+            return False
+        return True
+
+    def _apply_probability_adjustments(
+        self, analysis: Analysis, market: Market, side: Side, midpoint: float, extras: dict,
+    ) -> float:
+        """Run calibration, Platt scaling, longshot bias, and strategy signal pipeline."""
         est_prob = analysis.estimated_probability
-        extras = {"raw_est_prob": round(est_prob, 4)}
+        extras["raw_est_prob"] = round(est_prob, 4)
 
         if config.USE_CALIBRATION:
             prev_prob = est_prob
@@ -87,14 +153,11 @@ class Simulator:
             pass
 
         # Longshot bias correction (Snowberg & Wolfers 2010)
-        # LLMs overestimate longshots and underestimate favorites
         if config.SIM_LONGSHOT_BIAS_ENABLED:
             if midpoint < config.SIM_LONGSHOT_LOW_THRESHOLD:
-                # Longshots overpriced — shrink our estimate toward 0
                 est_prob = est_prob * (1 - config.SIM_LONGSHOT_ADJUSTMENT)
                 extras["longshot_adj"] = True
             elif midpoint > config.SIM_LONGSHOT_HIGH_THRESHOLD:
-                # Favorites underpriced — push our estimate toward 1
                 est_prob = est_prob + (1 - est_prob) * config.SIM_LONGSHOT_ADJUSTMENT
                 extras["longshot_adj"] = True
 
@@ -120,72 +183,31 @@ class Simulator:
         except Exception:
             pass
 
-        # Reject if edge too small
-        edge = abs(est_prob - midpoint)
-        if edge < config.SIM_MIN_EDGE:
-            return None
+        return est_prob
 
-        # Kelly criterion bet sizing (spread-adjusted)
-        bet_amount = kelly_size(
-            estimated_prob=est_prob,
-            market_price=midpoint,
-            side=side,
-            bankroll=portfolio.balance,
-            max_bet_pct=config.SIM_MAX_BET_PCT,
-            fraction=config.SIM_KELLY_FRACTION,
-            spread=spread,
-        )
-
-        # Minimum $1 bet, cap at balance
-        if bet_amount < 1.0:
-            return None
-        bet_amount = min(bet_amount, portfolio.balance)
-
-        # Compute slippage-adjusted entry price
+    def _compute_entry_and_slippage(
+        self, market: Market, side: Side, amount: float, midpoint: float, spread: float,
+        extras: dict,
+    ) -> tuple[float | None, float]:
+        """Compute slippage-adjusted entry price. Returns (entry_price, slippage_bps) or (None, 0)."""
         from src.slippage import apply_slippage
         entry_price, slippage_bps = apply_slippage(
             midpoint=midpoint,
             spread=spread,
             side=side.value,
-            amount=bet_amount,
+            amount=amount,
             order_book=market.order_book,
         )
         if entry_price <= 0.001:
-            return None
-        # Reject trades with excessive slippage
+            return None, 0.0
         if slippage_bps > config.MAX_SLIPPAGE_BPS:
             logger.info("Slippage too high (%.0f bps > %d max) for %s, skipping",
                         slippage_bps, config.MAX_SLIPPAGE_BPS, market.question[:40])
-            return None
+            return None, 0.0
 
         extras["slippage_bps"] = round(slippage_bps, 1)
         extras["midpoint"] = round(midpoint, 4)
-        extras["final_est_prob"] = round(est_prob, 4)
-
-        # Attach extras to analysis for persistence upstream
-        analysis.extras = extras
-
-        shares = bet_amount / entry_price
-
-        bet = Bet(
-            id=None,
-            trader_id=self.trader_id,
-            market_id=market.id,
-            market_question=market.question,
-            side=side,
-            amount=bet_amount,
-            entry_price=entry_price,
-            shares=shares,
-            token_id=token_id,
-            event_id=market.event_id,
-            category=analysis.category,
-            confidence=analysis.confidence,
-            slippage_bps=round(slippage_bps, 1),
-            midpoint_at_entry=midpoint,
-        )
-
-        bet.id = db.save_bet(bet)
-        return bet
+        return entry_price, slippage_bps
 
     def update_positions(self) -> list[Bet]:
         """Update current prices for all open bets."""

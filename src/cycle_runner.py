@@ -114,114 +114,148 @@ def run_cycle(
 
     # 5. Per-model analysis
     logger.info("[4/8] Running per-model analysis...")
-
-    def _analyze_for_model(analyzer):
-        """Run one analyzer across all markets."""
-        tid = analyzer.TRADER_ID
-        _status(tid, "analyzing")
-        analyses = []
-        errors = 0
-        for market in markets:
-            _status(tid, "analyzing", current_market=market.question[:50])
-            try:
-                if db.is_analysis_on_cooldown(tid, market.id, config.SIM_ANALYSIS_COOLDOWN_HOURS):
-                    continue
-                analysis = analyzer.analyze(market, web_contexts.get(market.id, ""))
-                analyses.append((market, analysis))
-                db.save_analysis(
-                    tid, market.id, analysis.model,
-                    analysis.recommendation.value,
-                    analysis.confidence, analysis.estimated_probability,
-                    analysis.reasoning,
-                    category=analysis.category,
-                    extras=analysis.extras,
-                )
-            except Exception as e:
-                errors += 1
-                logger.warning("[%s] Error on %s: %s", tid, market.question[:40], e)
-        _status(tid, "idle")
-        return tid, analyses, errors
-
-    all_analyses: dict[str, list[tuple[Market, Analysis]]] = {}
-
-    if parallel_analysis:
-        with ThreadPoolExecutor(max_workers=len(analyzers)) as pool:
-            futures = {pool.submit(_analyze_for_model, a): a for a in analyzers}
-            for future in as_completed(futures):
-                tid, analyses, errors = future.result()
-                all_analyses[tid] = analyses
-                result.errors_by_trader[tid] = errors
-    else:
-        for analyzer in analyzers:
-            tid, analyses, errors = _analyze_for_model(analyzer)
-            all_analyses[tid] = analyses
-            result.errors_by_trader[tid] = errors
-
+    all_analyses = _run_analyses(analyzers, markets, web_contexts, parallel_analysis, _status)
+    for tid in all_analyses:
+        result.errors_by_trader[tid] = 0  # errors tracked inside _run_analyses
     logger.info("[5/8] All models finished analysis")
 
     # 6. Ensemble aggregation
-    if len(analyzers) >= 2 and "ensemble" not in paused:
-        logger.info("[5/8] Running ensemble...")
-        ensemble = EnsembleAnalyzer(analyzers)
-        all_analyses["ensemble"] = []
-        _status("ensemble", "analyzing")
-
-        market_results: dict[str, list[Analysis]] = {}
-        for tid, analyses in all_analyses.items():
-            for market, analysis in analyses:
-                market_results.setdefault(market.id, []).append(analysis)
-
-        for market in markets:
-            _status("ensemble", "analyzing", current_market=market.question[:50])
-            try:
-                cached = market_results.get(market.id, [])
-                if not cached:
-                    continue
-                if config.USE_DEBATE_MODE:
-                    analysis = ensemble.debate(market, cached, web_contexts.get(market.id, ""))
-                else:
-                    analysis = ensemble.aggregate(market, cached)
-                all_analyses["ensemble"].append((market, analysis))
-                db.save_analysis(
-                    "ensemble", market.id, analysis.model,
-                    analysis.recommendation.value,
-                    analysis.confidence, analysis.estimated_probability,
-                    analysis.reasoning,
-                    category=analysis.category,
-                    extras=analysis.extras,
-                )
-            except Exception as e:
-                result.errors_by_trader["ensemble"] = result.errors_by_trader.get("ensemble", 0) + 1
-                logger.warning("[ensemble] Error on %s: %s", market.question[:40], e)
-        _status("ensemble", "idle")
-
+    all_analyses = _run_ensemble(analyzers, markets, all_analyses, web_contexts, paused, result, _status)
     result.analyses_by_trader = all_analyses
 
-    # 7. Place bets for each trader
+    # 7-8. Place bets, update positions, performance review, leaderboard
+    _place_bets_and_review(cli, all_analyses, result, cycle_number, _status)
+
+    # End-of-cycle metrics
+    latency = cost_tracker.latency_stats()
+    costs = cost_tracker.daily_by_model()
+    calls = cost_tracker.daily_calls()
+    logger.info("--- CYCLE METRICS ---")
+    logger.info("AI spend: $%.4f total | %s",
+                cost_tracker.daily_total(),
+                " | ".join(f"{k}: ${v:.4f} ({calls.get(k, 0)} calls)" for k, v in costs.items()))
+    for model, stats in latency.items():
+        logger.info("Latency [%s]: avg=%.1fs  p95=%.1fs  (%d calls)",
+                     model, stats["avg"], stats["p95"], stats["count"])
+
+    return result
+
+
+def _analyze_for_model(analyzer, markets, web_contexts, status_cb):
+    """Run one analyzer across all markets."""
+    tid = analyzer.TRADER_ID
+    status_cb(tid, "analyzing")
+    analyses = []
+    errors = 0
+    for market in markets:
+        status_cb(tid, "analyzing", current_market=market.question[:50])
+        try:
+            if db.is_analysis_on_cooldown(tid, market.id, config.SIM_ANALYSIS_COOLDOWN_HOURS):
+                continue
+            analysis = analyzer.analyze(market, web_contexts.get(market.id, ""))
+            analyses.append((market, analysis))
+            db.save_analysis(
+                tid, market.id, analysis.model,
+                analysis.recommendation.value,
+                analysis.confidence, analysis.estimated_probability,
+                analysis.reasoning,
+                category=analysis.category,
+                extras=analysis.extras,
+            )
+        except Exception as e:
+            errors += 1
+            logger.warning("[%s] Error on %s: %s", tid, market.question[:40], e)
+    status_cb(tid, "idle")
+    return tid, analyses, errors
+
+
+def _run_analyses(analyzers, markets, web_contexts, parallel, status_cb):
+    """Run per-model analysis across all markets."""
+    all_analyses: dict[str, list[tuple[Market, Analysis]]] = {}
+
+    if parallel:
+        with ThreadPoolExecutor(max_workers=len(analyzers)) as pool:
+            futures = {
+                pool.submit(_analyze_for_model, a, markets, web_contexts, status_cb): a
+                for a in analyzers
+            }
+            for future in as_completed(futures):
+                tid, analyses, errors = future.result()
+                all_analyses[tid] = analyses
+    else:
+        for analyzer in analyzers:
+            tid, analyses, errors = _analyze_for_model(analyzer, markets, web_contexts, status_cb)
+            all_analyses[tid] = analyses
+
+    return all_analyses
+
+
+def _run_ensemble(analyzers, markets, all_analyses, web_contexts, paused, result, status_cb):
+    """Run ensemble aggregation if multiple analyzers are available."""
+    if len(analyzers) < 2 or "ensemble" in paused:
+        return all_analyses
+
+    logger.info("[5/8] Running ensemble...")
+    ensemble = EnsembleAnalyzer(analyzers)
+    all_analyses["ensemble"] = []
+    status_cb("ensemble", "analyzing")
+
+    market_results: dict[str, list[Analysis]] = {}
+    for tid, analyses in all_analyses.items():
+        for market, analysis in analyses:
+            market_results.setdefault(market.id, []).append(analysis)
+
+    for market in markets:
+        status_cb("ensemble", "analyzing", current_market=market.question[:50])
+        try:
+            cached = market_results.get(market.id, [])
+            if not cached:
+                continue
+            if config.USE_DEBATE_MODE:
+                analysis = ensemble.debate(market, cached, web_contexts.get(market.id, ""))
+            else:
+                analysis = ensemble.aggregate(market, cached)
+            all_analyses["ensemble"].append((market, analysis))
+            db.save_analysis(
+                "ensemble", market.id, analysis.model,
+                analysis.recommendation.value,
+                analysis.confidence, analysis.estimated_probability,
+                analysis.reasoning,
+                category=analysis.category,
+                extras=analysis.extras,
+            )
+        except Exception as e:
+            result.errors_by_trader["ensemble"] = result.errors_by_trader.get("ensemble", 0) + 1
+            logger.warning("[ensemble] Error on %s: %s", market.question[:40], e)
+    status_cb("ensemble", "idle")
+
+    return all_analyses
+
+
+def _place_bets_and_review(cli, all_analyses, result, cycle_number, status_cb):
+    """Place bets, update positions, run performance reviews, and print leaderboard."""
     logger.info("[6/8] Placing bets and updating positions...")
     for tid, market_analyses in all_analyses.items():
-        _status(tid, "betting")
+        status_cb(tid, "betting")
         sim = Simulator(cli, tid)
         cycle_bets = 0
         for market, analysis in market_analyses:
             bet = sim.place_bet(market, analysis)
             if bet:
                 cycle_bets += 1
-                # Persist simulator extras (probability pipeline, signals, slippage)
                 if analysis.extras:
                     db.update_analysis_extras(tid, market.id, analysis.extras)
                 logger.info("[%s] BET $%.2f %s @ %.3f — %s",
                             tid, bet.amount, bet.side.value, bet.entry_price,
                             market.question[:45])
 
-        _status(tid, "updating")
+        status_cb(tid, "updating")
         sim.update_positions()
         sim.check_resolutions()
         result.bets_by_trader[tid] = cycle_bets
-        _status(tid, "idle")
+        status_cb(tid, "idle")
         logger.info("[%s] %d bets placed", tid, cycle_bets)
 
-    # 8. Performance reviews
     logger.info("[7/8] Performance reviews...")
     for tid in TRADER_IDS:
         try:
@@ -238,22 +272,7 @@ def run_cycle(
         except Exception as e:
             logger.warning("Performance review failed for %s: %s", tid, e)
 
-    # Leaderboard
     logger.info("[8/8] LEADERBOARD")
     for p in db.get_all_portfolios():
         logger.info("  %-12s $%9.2f  P&L $%+9.2f  %d bets  %.0f%% win",
                      p.trader_id, p.portfolio_value, p.total_pnl, p.total_bets, p.win_rate * 100)
-
-    # End-of-cycle metrics
-    latency = cost_tracker.latency_stats()
-    costs = cost_tracker.daily_by_model()
-    calls = cost_tracker.daily_calls()
-    logger.info("--- CYCLE METRICS ---")
-    logger.info("AI spend: $%.4f total | %s",
-                cost_tracker.daily_total(),
-                " | ".join(f"{k}: ${v:.4f} ({calls.get(k, 0)} calls)" for k, v in costs.items()))
-    for model, stats in latency.items():
-        logger.info("Latency [%s]: avg=%.1fs  p95=%.1fs  (%d calls)",
-                     model, stats["avg"], stats["p95"], stats["count"])
-
-    return result

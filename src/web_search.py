@@ -90,10 +90,12 @@ def _build_alt_search_query(market: Market) -> str:
         return f"{q} price analysis outlook {year}"
     elif category == "sports":
         return f"{q} odds prediction betting {year}"
-    elif category == "finance":
+    elif category == "economics":
         return f"{q} forecast economic outlook {year}"
-    elif category == "science_tech":
-        return f"{q} latest news update {year}"
+    elif category == "tech":
+        return f"{q} latest technology news update {year}"
+    elif category == "science":
+        return f"{q} latest science news update {year}"
     else:
         return f"{q} analysis prediction {year}"
 
