@@ -38,9 +38,18 @@ def estimate_fill_price(
         # Sort asks ascending (cheapest first)
         levels = sorted(levels, key=lambda x: float(x.get("price", 0)))
     else:
-        levels = order_book.get("bids", [])
-        # Sort bids descending (best price first) — for NO side we buy from bids
-        levels = sorted(levels, key=lambda x: float(x.get("price", 0)), reverse=True)
+        # Buying NO = selling YES = hitting the YES bids.
+        # We walk YES bids and convert: NO entry price = 1 - YES bid price.
+        # Build synthetic NO ask levels from the YES bids.
+        raw_bids = order_book.get("bids", [])
+        levels = []
+        for b in raw_bids:
+            yes_price = float(b.get("price", 0))
+            if yes_price <= 0:
+                continue
+            levels.append({"price": str(1.0 - yes_price), "size": b.get("size", "0")})
+        # Sort ascending (cheapest NO price first = highest YES bid first)
+        levels = sorted(levels, key=lambda x: float(x.get("price", 0)))
 
     if not levels:
         # No levels available, use fallback

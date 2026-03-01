@@ -37,10 +37,11 @@ class TestEstimateFillPrice:
         assert bps > 0
 
     def test_single_level_buy_no(self):
-        """Buy NO: walk bids (best price first)."""
+        """Buy NO: walk bids, convert to NO price (1 - YES bid)."""
         book = make_book(bids=[make_level(0.45, 100)])
         price, bps = estimate_fill_price(book, "NO", 10, midpoint=0.50, spread=0.04)
-        assert price == pytest.approx(0.45, abs=0.01)
+        # YES bid at 0.45 → NO entry = 1 - 0.45 = 0.55
+        assert price == pytest.approx(0.55, abs=0.01)
 
     def test_multi_level_ascending_fill(self):
         """Multiple ask levels, fills across two levels."""
@@ -86,15 +87,15 @@ class TestEstimateFillPrice:
         price, _ = estimate_fill_price(book, "YES", 10, midpoint=0.50, spread=0.04)
         assert price == pytest.approx(0.55, abs=0.01)
 
-    def test_bids_sorted_descending_for_no(self):
-        """For NO side, bids should be sorted descending (best price first)."""
+    def test_bids_sorted_for_no(self):
+        """For NO side, best NO price (highest YES bid) fills first."""
         book = make_book(bids=[
             make_level(0.40, 50),
-            make_level(0.45, 50),  # Better price
+            make_level(0.45, 50),  # Higher YES bid → cheaper NO (0.55)
         ])
         price, _ = estimate_fill_price(book, "NO", 10, midpoint=0.50, spread=0.04)
-        # Should fill at 0.45 first (best bid)
-        assert price == pytest.approx(0.45, abs=0.01)
+        # Highest YES bid 0.45 → NO price 0.55 fills first (cheapest NO)
+        assert price == pytest.approx(0.55, abs=0.01)
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +115,8 @@ class TestApplySlippage:
         """When order book available, uses it for NO side."""
         book = make_book(bids=[make_level(0.47, 100)])
         price, bps = apply_slippage(0.50, 0.04, "NO", 10, order_book=book)
-        assert price == pytest.approx(0.47, abs=0.01)
+        # YES bid at 0.47 → NO entry = 1 - 0.47 = 0.53
+        assert price == pytest.approx(0.53, abs=0.01)
 
     def test_no_order_book_fallback(self):
         """No order book uses fallback pricing."""
