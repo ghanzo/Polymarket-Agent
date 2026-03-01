@@ -12,6 +12,7 @@ Covers:
 import math
 import pytest
 from unittest.mock import patch, MagicMock
+from freezegun import freeze_time
 
 from src.models import Market
 from src.config import Config
@@ -104,6 +105,7 @@ class TestFeatureExtraction:
         f = extract_features(m)
         assert f["log_volume"] == pytest.approx(math.log1p(100000), rel=0.01)
 
+    @freeze_time("2026-02-01T12:00:00Z")
     def test_time_features(self):
         m = _make_market(end_date="2026-03-01T00:00:00Z")
         f = extract_features(m)
