@@ -92,5 +92,15 @@ Edit `.env` to configure. Key settings:
 ## Tests
 
 ```bash
-python -m pytest tests/ -q    # ~674 passed, 8 skipped (no Docker needed)
+python -m pytest tests/ -q    # ~682 passed, 8 skipped (no Docker needed)
 ```
+
+## Documentation
+
+Detailed documentation is organized into three pillars in [`docs/context/`](docs/context/README.md):
+
+| Pillar | Focus | Start Here |
+|--------|-------|------------|
+| **R&D** | Where are we going? Vision, roadmap, research | [R&D index](docs/context/r-and-d/README.md) |
+| **Testing** | Is it working correctly? Test strategy, bug log | [Testing index](docs/context/testing/README.md) |
+| **Architecture** | How does it work? Module map, data flow | [Architecture index](docs/context/architecture/README.md) |
