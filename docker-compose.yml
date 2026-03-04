@@ -39,6 +39,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-polymarket}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5434:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-polymarket}"]
       interval: 5s
