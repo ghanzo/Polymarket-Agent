@@ -100,6 +100,13 @@ class Config:
     SIM_MAX_POSITION_DAYS: int = int(os.getenv("SIM_MAX_POSITION_DAYS", "14"))
     SIM_STALE_THRESHOLD: float = float(os.getenv("SIM_STALE_THRESHOLD", "0.05"))
 
+    # Stale price guard — reject bets where midpoint drifted since enrichment
+    SIM_STALE_PRICE_THRESHOLD: float = float(os.getenv("SIM_STALE_PRICE_THRESHOLD", "0.10"))
+
+    # Minimum hold time (seconds) before exit logic applies — prevents phantom
+    # profits from same-cycle place→update where price moves between API calls
+    SIM_MIN_HOLD_SECONDS: float = float(os.getenv("SIM_MIN_HOLD_SECONDS", "300"))
+
     # Crypto noise filter (toggle off for arbitrage)
     FILTER_CRYPTO_NOISE: bool = os.getenv("FILTER_CRYPTO_NOISE", "true").lower() == "true"
 
@@ -142,6 +149,34 @@ class Config:
     # Walk-forward backtesting
     BACKTEST_WINDOW_DAYS: int = int(os.getenv("BACKTEST_WINDOW_DAYS", "30"))
     BACKTEST_STEP_DAYS: int = int(os.getenv("BACKTEST_STEP_DAYS", "7"))
+
+    # Quant agent
+    QUANT_AGENT_ENABLED: bool = os.getenv("QUANT_AGENT_ENABLED", "true").lower() == "true"
+    QUANT_MIN_CONFIDENCE: float = float(os.getenv("QUANT_MIN_CONFIDENCE", "0.55"))
+    QUANT_MIN_EDGE: float = float(os.getenv("QUANT_MIN_EDGE", "0.03"))
+    QUANT_MAX_SIGNAL_ADJ: float = float(os.getenv("QUANT_MAX_SIGNAL_ADJ", "0.08"))
+    QUANT_BELIEF_VOL_HIGH: float = float(os.getenv("QUANT_BELIEF_VOL_HIGH", "0.5"))
+    QUANT_BELIEF_VOL_LOW: float = float(os.getenv("QUANT_BELIEF_VOL_LOW", "0.15"))
+    QUANT_LOGIT_MOMENTUM_THRESHOLD: float = float(os.getenv("QUANT_LOGIT_MOMENTUM_THRESHOLD", "0.3"))
+    QUANT_LOGIT_REVERSION_THRESHOLD: float = float(os.getenv("QUANT_LOGIT_REVERSION_THRESHOLD", "0.25"))
+    QUANT_MIN_EDGE_ZSCORE: float = float(os.getenv("QUANT_MIN_EDGE_ZSCORE", "1.5"))
+    QUANT_ARB_MIN_SPREAD: float = float(os.getenv("QUANT_ARB_MIN_SPREAD", "0.01"))
+    QUANT_MIN_SIGNALS: int = int(os.getenv("QUANT_MIN_SIGNALS", "2"))
+    # Extracted signal tuning parameters
+    QUANT_VOL_BOOST_WEIGHT: float = float(os.getenv("QUANT_VOL_BOOST_WEIGHT", "0.5"))
+    QUANT_SIGNAL_SATURATION_MULT: float = float(os.getenv("QUANT_SIGNAL_SATURATION_MULT", "3"))
+    QUANT_REVERSION_WEIGHT: float = float(os.getenv("QUANT_REVERSION_WEIGHT", "0.7"))
+    QUANT_LIQUIDITY_WEIGHT: float = float(os.getenv("QUANT_LIQUIDITY_WEIGHT", "0.5"))
+    QUANT_IMBALANCE_THRESHOLD: float = float(os.getenv("QUANT_IMBALANCE_THRESHOLD", "0.15"))
+    QUANT_MIN_LIQUIDITY_SCORE: float = float(os.getenv("QUANT_MIN_LIQUIDITY_SCORE", "0.3"))
+    QUANT_ARB_STRENGTH_THRESHOLD: float = float(os.getenv("QUANT_ARB_STRENGTH_THRESHOLD", "0.2"))
+    # Quant-specific scan settings (wider than LLM since zero marginal cost)
+    QUANT_SCAN_DEPTH: int = int(os.getenv("QUANT_SCAN_DEPTH", "2000"))
+    QUANT_MAX_MARKETS: int = int(os.getenv("QUANT_MAX_MARKETS", "200"))
+    QUANT_ANALYSIS_COOLDOWN_HOURS: float = float(os.getenv("QUANT_ANALYSIS_COOLDOWN_HOURS", "0.5"))
+    QUANT_BYPASS_PRESCREENER: bool = os.getenv("QUANT_BYPASS_PRESCREENER", "true").lower() == "true"
+    QUANT_MAX_MARKETS_PER_EVENT: int = int(os.getenv("QUANT_MAX_MARKETS_PER_EVENT", "20"))
+    QUANT_MAX_RELATED_MARKETS: int = int(os.getenv("QUANT_MAX_RELATED_MARKETS", "50"))
 
     # AI Budget (daily caps in USD)
     AI_BUDGET_SOFT_CAP: float = float(os.getenv("AI_BUDGET_SOFT_CAP", "10.0"))

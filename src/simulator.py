@@ -21,18 +21,27 @@ class Simulator:
         """Place a simulated bet using Kelly criterion sizing."""
         if analysis.recommendation == Recommendation.SKIP:
             return None
-        # Ensemble gets a lower confidence bar when multiple models agree
-        min_conf = config.SIM_ENSEMBLE_MIN_CONFIDENCE if self.trader_id == "ensemble" else config.SIM_MIN_CONFIDENCE
+        # Ensemble and quant get lower confidence bars
+        if self.trader_id == "ensemble":
+            min_conf = config.SIM_ENSEMBLE_MIN_CONFIDENCE
+        elif self.trader_id == "quant":
+            min_conf = config.QUANT_MIN_CONFIDENCE
+        else:
+            min_conf = config.SIM_MIN_CONFIDENCE
         if analysis.confidence < min_conf:
             return None
         if db.has_open_bet_on_market(market.id, self.trader_id):
             return None
 
-        # Event concentration limit
-        if market.event_id and config.SIM_MAX_BETS_PER_EVENT > 0:
-            open_in_event = db.count_open_bets_by_event(market.event_id, self.trader_id)
-            if open_in_event >= config.SIM_MAX_BETS_PER_EVENT:
-                return None
+        # Event concentration limit (quant gets wider limit for multi-outcome arb)
+        if market.event_id:
+            max_per_event = (config.QUANT_MAX_MARKETS_PER_EVENT
+                             if self.trader_id == "quant"
+                             else config.SIM_MAX_BETS_PER_EVENT)
+            if max_per_event > 0:
+                open_in_event = db.count_open_bets_by_event(market.event_id, self.trader_id)
+                if open_in_event >= max_per_event:
+                    return None
 
         if not self._check_risk_limits():
             return None
@@ -52,8 +61,22 @@ class Simulator:
         if not token_id:
             return None
 
-        # Probability adjustment pipeline
-        extras: dict = {}
+        # Stale price guard: re-fetch live midpoint and reject if price drifted
+        # since enrichment (prevents phantom profits on fast-moving sports markets)
+        live_midpoint = self._get_live_midpoint(token_id)
+        if live_midpoint is not None:
+            drift = abs(live_midpoint - midpoint)
+            if drift > config.SIM_STALE_PRICE_THRESHOLD:
+                logger.info("Stale price: enriched=%.3f live=%.3f drift=%.3f (>%.3f), skipping %s",
+                            midpoint, live_midpoint, drift, config.SIM_STALE_PRICE_THRESHOLD,
+                            market.question[:45])
+                return None
+            # Use fresh price for all downstream calculations
+            midpoint = live_midpoint
+            spread = market.spread or 0.0  # spread not re-fetched, keep enrichment value
+
+        # Probability adjustment pipeline (merge into existing extras from analyzer)
+        extras: dict = dict(analysis.extras) if analysis.extras else {}
         est_prob = self._apply_probability_adjustments(analysis, market, side, midpoint, extras)
 
         # Reject if edge too small
@@ -127,12 +150,39 @@ class Simulator:
             return False
         return True
 
+    def _get_live_midpoint(self, token_id: str) -> float | None:
+        """Fetch fresh CLOB midpoint for a token. Returns None on failure."""
+        try:
+            mid = self.cli.clob_midpoint(token_id)
+            if not isinstance(mid, dict):
+                return None
+            price = float(mid.get("midpoint", 0))
+            return price if price > 0 else None
+        except (APIError, ValueError, TypeError):
+            return None
+
     def _apply_probability_adjustments(
         self, analysis: Analysis, market: Market, side: Side, midpoint: float, extras: dict,
     ) -> float:
-        """Run calibration, Platt scaling, longshot bias, and strategy signal pipeline."""
+        """Run calibration, Platt scaling, longshot bias, and strategy signal pipeline.
+
+        Quant trader bypasses LLM-specific adjustments (Platt scaling, old strategy
+        signals) since its probabilities are already math-derived, not LLM-biased.
+        """
         est_prob = analysis.estimated_probability
         extras["raw_est_prob"] = round(est_prob, 4)
+
+        # Quant agent: only apply longshot bias (market-level phenomenon), skip
+        # LLM-specific adjustments (calibration, Platt scaling, strategy signals)
+        if self.trader_id == "quant":
+            if config.SIM_LONGSHOT_BIAS_ENABLED:
+                if midpoint < config.SIM_LONGSHOT_LOW_THRESHOLD:
+                    est_prob = est_prob * (1 - config.SIM_LONGSHOT_ADJUSTMENT)
+                    extras["longshot_adj"] = True
+                elif midpoint > config.SIM_LONGSHOT_HIGH_THRESHOLD:
+                    est_prob = est_prob + (1 - est_prob) * config.SIM_LONGSHOT_ADJUSTMENT
+                    extras["longshot_adj"] = True
+            return est_prob
 
         if config.USE_CALIBRATION:
             prev_prob = est_prob
@@ -153,6 +203,9 @@ class Simulator:
             pass
 
         # Longshot bias correction (Snowberg & Wolfers 2010)
+        # Adjusts est_prob toward reality regardless of bet side:
+        # - Low midpoint: YES is longshot, overpriced → reduce est_prob
+        # - High midpoint: NO is longshot, overpriced → increase est_prob
         if config.SIM_LONGSHOT_BIAS_ENABLED:
             if midpoint < config.SIM_LONGSHOT_LOW_THRESHOLD:
                 est_prob = est_prob * (1 - config.SIM_LONGSHOT_ADJUSTMENT)
@@ -222,6 +275,14 @@ class Simulator:
                     current_value = price
                     bet.current_price = current_value
                     db.update_bet_price(bet.id, current_value)
+
+                    # Skip exit logic for bets too new — in real trading,
+                    # limit orders take time to fill. Prevents phantom profits
+                    # from same-cycle place→update price jumps.
+                    placed = bet.placed_at if bet.placed_at.tzinfo else bet.placed_at.replace(tzinfo=timezone.utc)
+                    age_seconds = (datetime.now(timezone.utc) - placed).total_seconds()
+                    if age_seconds < config.SIM_MIN_HOLD_SECONDS:
+                        continue
 
                     # Track peak price for trailing stop
                     if bet.peak_price is None or current_value > bet.peak_price:
@@ -334,6 +395,11 @@ class Simulator:
             if not analysis:
                 continue
 
+            # EXITED bets contribute PnL but have no binary outcome for Brier/accuracy
+            total_pnl += bet.pnl
+            if bet.status == BetStatus.EXITED:
+                continue
+
             est_prob = analysis["estimated_probability"]
             yes_won = (bet.status == BetStatus.WON) if bet.side == Side.YES else (bet.status == BetStatus.LOST)
 
@@ -347,7 +413,6 @@ class Simulator:
             actual = 1.0 if yes_won else 0.0
             brier_sum += (est_prob - actual) ** 2
             brier_n += 1
-            total_pnl += bet.pnl
             confidences.append(analysis["confidence"])
 
         if brier_n == 0:
@@ -386,9 +451,11 @@ class Simulator:
             if len(resolved_bets) < config.MIN_CALIBRATION_SAMPLES:
                 return
 
-            # Match resolved bets with their analysis predictions
+            # Match resolved bets with their analysis predictions (skip EXITED — no binary outcome)
             predictions = []
             for bet in resolved_bets:
+                if bet.status == BetStatus.EXITED:
+                    continue
                 analysis = db.get_analysis_for_bet(self.trader_id, bet.market_id)
                 if analysis and analysis.get("estimated_probability") is not None:
                     yes_won = bet.status == BetStatus.WON if bet.side == Side.YES else bet.status == BetStatus.LOST

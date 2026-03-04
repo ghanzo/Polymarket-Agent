@@ -15,9 +15,9 @@ Ensure math correctness, catch bugs early, and build confidence for real-money t
 
 ## Quick Reference
 
-- **682 tests** passing across 22 test files
-- **Grade**: B+ — good breadth, notable depth gaps in financial accounting
-- **Target**: A — requires Phases T1 (balance tests) and T2 (property-based invariants)
+- **712 tests** passing across 23 test files (5 fee accounting + 25 balance lifecycle tests added 2026-03-03)
+- **Grade**: B — Phase T1 (balance lifecycle) complete; systemic test weaknesses reduced
+- **Target**: A — requires Phases T2 (property-based invariants) and T3 (real PostgreSQL)
 - **Run tests**: `python -m pytest tests/ -q`
 - **With coverage**: `python -m pytest tests/ --cov=src --cov-report=html`
 

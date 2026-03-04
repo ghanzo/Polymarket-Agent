@@ -465,7 +465,16 @@ class Analyzer(ABC):
                 "updated_confidence": own_analysis.confidence,
                 "rebuttal_reasoning": f"Failed to parse rebuttal: {cleaned[:100]}",
             }
-        data = json.loads(cleaned[start:end])
+        try:
+            data = json.loads(cleaned[start:end])
+        except (json.JSONDecodeError, ValueError):
+            return {
+                "model": self._model_id(),
+                "updated_recommendation": own_analysis.recommendation.value,
+                "updated_probability": own_analysis.estimated_probability,
+                "updated_confidence": own_analysis.confidence,
+                "rebuttal_reasoning": f"Rebuttal JSON malformed: {cleaned[start:end][:100]}",
+            }
         return {
             "model": self._model_id(),
             "updated_recommendation": data.get("updated_recommendation", own_analysis.recommendation.value),
@@ -673,7 +682,8 @@ class EnsembleAnalyzer(Analyzer):
             # Multiply by performance weight if available
             trader_id = r.model.split(":")[0] if ":" in r.model else r.model
             if model_weights:
-                perf_weight = model_weights.get(trader_id, 1.0 / max(len(model_weights), 1))
+                # New/unproven models get the minimum weight among proven models
+                perf_weight = model_weights.get(trader_id, min(model_weights.values()))
                 # Check for category-specific override
                 if category in cat_weights and trader_id in cat_weights[category]:
                     perf_weight = cat_weights[category][trader_id]
@@ -687,11 +697,16 @@ class EnsembleAnalyzer(Analyzer):
         majority_weight = weighted_votes[majority_rec]
 
         if majority_weight > total_weight / 2:
+            # Probability: blend ALL non-skip models (minority pulls toward center)
+            all_weights = [max(r.confidence, 0.1) for r in non_skip]
+            w_total_all = sum(all_weights)
+            avg_prob = sum(r.estimated_probability * w for r, w in zip(non_skip, all_weights)) / w_total_all
+
+            # Confidence: from majority voters only
             voters = [r for r in non_skip if r.recommendation == majority_rec]
             voter_weights = [max(r.confidence, 0.1) for r in voters]
-            w_total = sum(voter_weights)
-            avg_prob = sum(r.estimated_probability * w for r, w in zip(voters, voter_weights)) / w_total
-            avg_confidence = sum(r.confidence * w for r, w in zip(voters, voter_weights)) / w_total
+            vc_total = sum(voter_weights)
+            avg_confidence = sum(r.confidence * w for r, w in zip(voters, voter_weights)) / vc_total
 
             extras = {"model_votes": model_votes}
 

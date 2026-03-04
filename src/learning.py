@@ -6,6 +6,7 @@ Platt scaling fits a logistic function to correct LLM hedging bias.
 """
 
 import logging
+import threading
 
 import numpy as np
 
@@ -17,14 +18,16 @@ logger = logging.getLogger("learning")
 _cached_model_weights: dict[str, float] | None = None
 _cached_category_weights: dict[str, dict[str, float]] | None = None
 _cached_platt_params: dict[str, tuple[float, float]] | None = None
+_cache_lock = threading.Lock()
 
 
 def reset_weights():
     """Clear cached weights and Platt params. Call at the start of each scan cycle."""
     global _cached_model_weights, _cached_category_weights, _cached_platt_params
-    _cached_model_weights = None
-    _cached_category_weights = None
-    _cached_platt_params = None
+    with _cache_lock:
+        _cached_model_weights = None
+        _cached_category_weights = None
+        _cached_platt_params = None
 
 
 def compute_model_weights(min_resolved: int | None = None) -> dict[str, float]:
@@ -35,8 +38,9 @@ def compute_model_weights(min_resolved: int | None = None) -> dict[str, float]:
         Empty dict when insufficient data (= use equal weights).
     """
     global _cached_model_weights
-    if _cached_model_weights is not None:
-        return _cached_model_weights
+    with _cache_lock:
+        if _cached_model_weights is not None:
+            return _cached_model_weights
 
     if min_resolved is None:
         min_resolved = config.LEARNING_MIN_RESOLVED
@@ -45,11 +49,13 @@ def compute_model_weights(min_resolved: int | None = None) -> dict[str, float]:
         from src import db
         reviews = db.get_latest_performance_reviews()
     except Exception:
-        _cached_model_weights = {}
+        with _cache_lock:
+            _cached_model_weights = {}
         return {}
 
     if not reviews:
-        _cached_model_weights = {}
+        with _cache_lock:
+            _cached_model_weights = {}
         return {}
 
     # Filter to models with enough resolved bets
@@ -61,7 +67,8 @@ def compute_model_weights(min_resolved: int | None = None) -> dict[str, float]:
     ]
 
     if len(qualified) < 2:
-        _cached_model_weights = {}
+        with _cache_lock:
+            _cached_model_weights = {}
         return {}
 
     # Inverse Brier: lower Brier = better = higher weight
@@ -75,11 +82,13 @@ def compute_model_weights(min_resolved: int | None = None) -> dict[str, float]:
 
     total = sum(raw_weights.values())
     if total <= 0:
-        _cached_model_weights = {}
+        with _cache_lock:
+            _cached_model_weights = {}
         return {}
 
     weights = {tid: w / total for tid, w in raw_weights.items()}
-    _cached_model_weights = weights
+    with _cache_lock:
+        _cached_model_weights = weights
     logger.info("Model weights: %s", {k: f"{v:.3f}" for k, v in weights.items()})
     return weights
 
@@ -92,14 +101,16 @@ def compute_category_weights(min_samples: int = 5) -> dict[str, dict[str, float]
         Empty dict when insufficient data.
     """
     global _cached_category_weights
-    if _cached_category_weights is not None:
-        return _cached_category_weights
+    with _cache_lock:
+        if _cached_category_weights is not None:
+            return _cached_category_weights
 
     try:
         from src import db
         from src.models import TRADER_IDS
     except Exception:
-        _cached_category_weights = {}
+        with _cache_lock:
+            _cached_category_weights = {}
         return {}
 
     # Gather category performance per trader (excluding ensemble)
@@ -130,7 +141,8 @@ def compute_category_weights(min_samples: int = 5) -> dict[str, dict[str, float]
             continue
         result[cat] = {tid: w / total for tid, w in raw.items()}
 
-    _cached_category_weights = result
+    with _cache_lock:
+        _cached_category_weights = result
     return result
 
 
@@ -216,8 +228,9 @@ def fit_platt_scaling(trader_id: str, min_samples: int | None = None) -> tuple[f
         None if insufficient data.
     """
     global _cached_platt_params
-    if _cached_platt_params is not None and trader_id in _cached_platt_params:
-        return _cached_platt_params[trader_id]
+    with _cache_lock:
+        if _cached_platt_params is not None and trader_id in _cached_platt_params:
+            return _cached_platt_params[trader_id]
 
     if min_samples is None:
         min_samples = config.PLATT_MIN_SAMPLES
@@ -236,6 +249,9 @@ def fit_platt_scaling(trader_id: str, min_samples: int | None = None) -> tuple[f
         predictions = []
         outcomes = []
         for bet in resolved:
+            # EXITED bets have no binary outcome — skip for Platt fitting
+            if bet.status == BetStatus.EXITED:
+                continue
             analysis = db.get_analysis_for_bet(trader_id, bet.market_id)
             if not analysis or analysis.get("estimated_probability") is None:
                 continue
@@ -262,9 +278,10 @@ def fit_platt_scaling(trader_id: str, min_samples: int | None = None) -> tuple[f
         A = float(lr.coef_[0][0])
         B = float(lr.intercept_[0])
 
-        if _cached_platt_params is None:
-            _cached_platt_params = {}
-        _cached_platt_params[trader_id] = (A, B)
+        with _cache_lock:
+            if _cached_platt_params is None:
+                _cached_platt_params = {}
+            _cached_platt_params[trader_id] = (A, B)
         logger.info("Platt scaling for %s: A=%.3f, B=%.3f (n=%d)", trader_id, A, B, len(predictions))
         return (A, B)
 

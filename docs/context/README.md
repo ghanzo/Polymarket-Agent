@@ -12,6 +12,7 @@
 | Plan next features or research strategies | [R&D](r-and-d/README.md) |
 | Fix a bug or write tests | [Testing](testing/README.md) |
 | Understand how the code works | [Architecture](architecture/README.md) |
+| Review the project or read past reviews | [Reviews](reviews/README.md) |
 
 ---
 
@@ -42,3 +43,11 @@ Module map, data flow, and dependency structure. Read when onboarding or before 
 
 - [System Overview](architecture/overview.md) — Tier diagram, 8-step cycle, dependency map
 - [Module Reference](architecture/modules.md) — Per-module descriptions, exports, and dependencies
+
+## Reviews (Point-in-Time Snapshots)
+
+**What did we find?**
+
+Raw review outputs, timestamped. Findings get distributed into the three pillars above as actionable updates.
+
+- [Reviews Index](reviews/README.md) — Timestamped review history and workflow

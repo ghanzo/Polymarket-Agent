@@ -33,18 +33,26 @@ def _enrich_analysis(a: dict) -> dict:
     # Probability pipeline: raw → calibrated → platt → consensus → final
     pipeline = None
     if extras:
-        pipeline = {"raw": extras.get("raw_est_prob")}
-        if "calibrated_prob" in extras:
-            pipeline["calibrated"] = extras["calibrated_prob"]
-        if "platt_prob" in extras:
-            pipeline["platt"] = extras["platt_prob"]
-        if "pre_blend_prob" in extras:
-            pipeline["consensus_input"] = extras["pre_blend_prob"]
-        if "market_midpoint" in extras:
-            pipeline["market_midpoint"] = extras["market_midpoint"]
-            pipeline["market_weight"] = extras.get("market_weight")
-        if "final_est_prob" in extras:
-            pipeline["final"] = extras["final_est_prob"]
+        if extras.get("agent") == "quant":
+            # Quant agent: raw midpoint → quant adjustment → final
+            pipeline = {"raw": extras.get("raw_est_prob")}
+            if "quant_adj" in extras:
+                pipeline["quant_adj"] = extras["quant_adj"]
+            if "final_est_prob" in extras:
+                pipeline["final"] = extras["final_est_prob"]
+        else:
+            pipeline = {"raw": extras.get("raw_est_prob")}
+            if "calibrated_prob" in extras:
+                pipeline["calibrated"] = extras["calibrated_prob"]
+            if "platt_prob" in extras:
+                pipeline["platt"] = extras["platt_prob"]
+            if "pre_blend_prob" in extras:
+                pipeline["consensus_input"] = extras["pre_blend_prob"]
+            if "market_midpoint" in extras:
+                pipeline["market_midpoint"] = extras["market_midpoint"]
+                pipeline["market_weight"] = extras.get("market_weight")
+            if "final_est_prob" in extras:
+                pipeline["final"] = extras["final_est_prob"]
     a["prob_pipeline"] = pipeline
 
     # Strategy signals
@@ -438,7 +446,19 @@ async def force_cycle():
         if sim_state["status"] == "running":
             return JSONResponse({"error": "Cycle already running"}, status_code=409)
         sim_state["status"] = "running"
-    asyncio.create_task(asyncio.to_thread(_run_cycle))
+
+    async def _force_cycle_wrapper():
+        try:
+            await asyncio.to_thread(_run_cycle)
+        except Exception as e:
+            with _sim_lock:
+                sim_state["last_error"] = str(e)
+            logger.error("Force cycle error: %s", e)
+        finally:
+            with _sim_lock:
+                sim_state["status"] = "waiting"
+
+    asyncio.create_task(_force_cycle_wrapper())
     return JSONResponse({"ok": True})
 
 

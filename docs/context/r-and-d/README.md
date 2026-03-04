@@ -23,6 +23,9 @@ Deep research that informs feature decisions. Reference these before implementin
 | [comparative-review.md](research/comparative-review.md) | Feature-by-feature comparison against ecosystem |
 | [strategy-repo-analysis.md](research/strategy-repo-analysis.md) | External strategy repo teardowns |
 | [independent-review.md](research/independent-review.md) | Deep code audit with 30 issues ranked by severity |
+| [quant-simulation-research.md](research/quant-simulation-research.md) | Quant simulation techniques: Monte Carlo, particle filters, copulas, arbitrage detection |
+| [quant-integration-plan.md](research/quant-integration-plan.md) | Integration framing: 3 tracks (structural arb, slippage/signals, portfolio risk) |
+| [quant.md](research/quant.md) | Raw source material from @gemchange_ltd thread |
 
 ## How to Use
 

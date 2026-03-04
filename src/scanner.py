@@ -1,4 +1,5 @@
 import json
+import logging
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -6,6 +7,8 @@ from datetime import datetime, timezone
 from src.api import PolymarketAPI, APIError
 from src.config import config
 from src.models import Market
+
+logger = logging.getLogger("scanner")
 
 
 class MarketScanner:
@@ -39,17 +42,29 @@ class MarketScanner:
                                 pass
                     # Extract metadata that enrichment would have fetched separately
                     market.created_at = m.get("createdAt") or m.get("created_at")
-                    event_id = m.get("eventSlug") or m.get("event_id") or m.get("eventId")
-                    if event_id:
-                        market.event_id = str(event_id)
+                    # Event ID is nested inside events[0].id in Gamma response
+                    events_list = m.get("events", [])
+                    if events_list and isinstance(events_list, list):
+                        event_id = events_list[0].get("id")
+                        if event_id:
+                            market.event_id = str(event_id)
+                        event_title = events_list[0].get("title")
+                        if event_title and not market.event_title:
+                            market.event_title = event_title
+                    else:
+                        event_id = m.get("eventSlug") or m.get("event_id") or m.get("eventId")
+                        if event_id:
+                            market.event_id = str(event_id)
                     if self._passes_filter(market):
                         raw_markets.append(market)
                 offset += page_size
                 # Safety cap: don't scan forever
                 if offset >= config.SIM_SCAN_DEPTH:
                     break
-            except APIError:
-                break
+            except APIError as e:
+                logger.warning("API error on page offset=%d, skipping: %s", offset, e)
+                offset += page_size
+                continue
 
         # Enrich with live pricing concurrently, then score
         enriched = []
@@ -301,9 +316,17 @@ class MarketScanner:
             pass
 
         try:
-            history = self.cli.price_history(token, interval="1d")
+            history = self.cli.price_history(token, interval="1d", fidelity=10)
             if isinstance(history, list):
                 market.price_history = history[-7:]  # Last 7 data points
+        except (APIError, ValueError, TypeError):
+            pass
+
+        # Daily history for quant multi-day signals (fidelity=1440 means 1 point per day)
+        try:
+            daily = self.cli.price_history(token, interval="1w", fidelity=1440)
+            if isinstance(daily, list) and daily:
+                market.price_history_daily = daily
         except (APIError, ValueError, TypeError):
             pass
 
@@ -322,26 +345,45 @@ class MarketScanner:
                 except (APIError, ValueError, TypeError):
                     pass
 
-            if market.event_id and not market.event_title:
+            # Fetch event data for title AND related markets (for structural arb)
+            # Always fetch related_markets if we have event_id and don't have them yet
+            need_event = (not market.event_title) or (not market.related_markets)
+            if market.event_id and need_event:
                 try:
                     event = self.cli.events_get(market.event_id)
                     if isinstance(event, dict):
-                        market.event_title = event.get("title") or event.get("name")
+                        if not market.event_title:
+                            market.event_title = event.get("title") or event.get("name")
+                        # Always populate related_markets for multi-outcome events
                         raw_markets = event.get("markets", [])
-                        related = []
-                        for rm in raw_markets:
-                            rm_id = str(rm.get("id", ""))
-                            if rm_id == market.id:
-                                continue
-                            related.append({
-                                "question": rm.get("question", ""),
-                                "midpoint": rm.get("midpoint"),
-                                "volume": rm.get("volume", "0"),
-                            })
-                            if len(related) >= 5:
-                                break
-                        if related:
-                            market.related_markets = related
+                        if len(raw_markets) > 1 and not market.related_markets:
+                            related = []
+                            for rm in raw_markets:
+                                rm_id = str(rm.get("id", ""))
+                                if rm_id == market.id:
+                                    continue
+                                # Extract midpoint with fallback to outcomePrices/lastTradePrice
+                                mid = rm.get("midpoint")
+                                if mid is None:
+                                    outcome_prices = rm.get("outcomePrices")
+                                    if outcome_prices:
+                                        try:
+                                            op = json.loads(outcome_prices) if isinstance(outcome_prices, str) else outcome_prices
+                                            if op:
+                                                mid = float(op[0])
+                                        except (ValueError, TypeError, IndexError):
+                                            pass
+                                if mid is None:
+                                    mid = rm.get("lastTradePrice")
+                                related.append({
+                                    "question": rm.get("question", ""),
+                                    "midpoint": mid,
+                                    "volume": rm.get("volume", "0"),
+                                })
+                                if len(related) >= config.QUANT_MAX_RELATED_MARKETS:
+                                    break
+                            if related:
+                                market.related_markets = related
                 except (APIError, ValueError, TypeError):
                     pass
 

@@ -1,8 +1,8 @@
 # Testing Framework & Strategy
 
-> Generated: 2026-03-01
-> Current state: **682 tests passing**, 22 test files, 0 skipped (8 skip without fastapi)
-> Grade: **B+** for testing — good breadth, notable depth gaps
+> Updated: 2026-03-04
+> Current state: **823 tests passing**, 24 test files, 8 skipped (skip without fastapi)
+> Grade: **B** for testing — good breadth, quant coverage strong, depth gaps in simulator/DB
 
 ---
 
@@ -22,7 +22,7 @@
 | test_profitability.py | 30 | Trailing stops, event concentration, ensemble confidence override |
 | test_phase3.py | 30 | Drawdown fixes, Platt scaling, market consensus |
 | test_walk_forward.py | 29 | RiskMetrics (Sharpe, Sortino, MaxDD, Calmar), walk-forward backtest |
-| test_slippage.py | 27 | Order book walking, fallback pricing, slippage limits |
+| test_slippage.py | 37 | Order book walking, Kyle state-dependent fallback, slippage limits |
 | test_learning_loop.py | 27 | Dynamic weights, error patterns, performance tracking |
 | test_integration.py | 27 | Full pipeline (scan -> prescreen -> analyze -> bet) |
 | test_analysis_detail.py | 26 | Analysis extras JSONB, prob pipeline, signal transparency |
@@ -33,6 +33,9 @@
 | test_enrichment.py | 16 | Market enrichment, concurrent requests, caching |
 | test_dashboard_controls.py | 14 | Settings validation, dashboard API endpoints |
 | test_prediction_quality.py | 14 | Prediction accuracy metrics, calibration tracking |
+| **test_quant.py** | **109** | **Quant signals, agent, arb execution model, aggregation, daily data, edge cases** |
+| test_balance_lifecycle.py | 25 | Full bet lifecycle, conservation invariant, double-resolve |
+| test_fee_accounting.py | 5 | Fee deduction in resolve_bet/close_bet |
 
 ### Fixtures (conftest.py)
 
@@ -64,6 +67,8 @@
 | scanner.py | test_scanner.py | Good — scanning, concurrency |
 | slippage.py | test_slippage.py | Good — book walking, fallback, edge cases |
 | strategies.py | test_strategies.py | Good — all 4 signal detectors |
+| quant/signals.py | test_quant.py | **Excellent** — all 6 detectors, arb, aggregation, daily data |
+| quant/agent.py | test_quant.py | **Excellent** — decision logic, confidence bounds, extras, compatibility |
 
 ### Modules Without Direct Tests
 
@@ -133,7 +138,7 @@ def test_resolve_winning_bet_balance_accounting():
     assert final_balance == pytest.approx(1198.00)
 ```
 
-**Status**: Identified, not yet fixed. Requires code change.
+**Status**: **FIXED 2026-03-03**. Fee now deducted from both `pnl` and `payout` in both functions. 5 behavioral tests in `test_fee_accounting.py`.
 
 ### Bug 3: make_interval Float Argument (FIXED)
 
@@ -150,6 +155,21 @@ def test_cooldown_query_with_float_hours():
 ```
 
 **Status**: Fixed by replacing `make_interval()` with `interval '1 hour' * %s`.
+
+---
+
+## 3.5 Systemic Test Weaknesses (Identified 2026-03-03)
+
+Three anti-patterns reduce test suite effectiveness across multiple files:
+
+### Weakness 1: Source Inspection Tests
+Tests that use `inspect.getsource()` and assert string presence (e.g., `"SIM_FEE_RATE" in source`) verify code text, not behavior. They pass even if the logic is wrong. **3 instances replaced** in test_cost_ops.py and test_critical_fixes.py with behavioral alternatives.
+
+### Weakness 2: Vacuous Assertions
+Assertions that accept all possible values, e.g., `assert x in (SKIP, BUY_YES, BUY_NO)` — this can never fail. **1 instance fixed** in test_integration.py (disagreement test now asserts SKIP specifically).
+
+### Weakness 3: Reimplemented Logic in Tests
+Tests that duplicate the production formula and compare output to their own copy. If the formula is wrong in both places, the test passes. Harder to fix systematically — mitigate by using known expected values (golden tests) instead.
 
 ---
 

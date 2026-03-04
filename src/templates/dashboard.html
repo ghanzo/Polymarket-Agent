@@ -176,6 +176,7 @@
         .tag-grok { background: #f4364c22; color: #f4364c; }
         .tag-gemini { background: #4285f422; color: #4285f4; }
         .tag-ensemble { background: #fbbf2422; color: #fbbf24; }
+        .tag-quant { background: #10b98122; color: #10b981; }
 
         /* Analysis log */
         .analysis-item {
@@ -282,6 +283,7 @@
         .trader-pill.active.tag-grok { background: #f4364c22; color: #f4364c; border-color: #f4364c; }
         .trader-pill.active.tag-gemini { background: #4285f422; color: #4285f4; border-color: #4285f4; }
         .trader-pill.active.tag-ensemble { background: #fbbf2422; color: #fbbf24; border-color: #fbbf24; }
+        .trader-pill.active.tag-quant { background: #10b98122; color: #10b981; border-color: #10b981; }
         .setting-saved {
             color: #4ade80; font-size: 11px; opacity: 0; transition: opacity 0.3s;
             margin-left: 8px;
@@ -504,7 +506,7 @@
                 <div class="setting-item">
                     <label>Active Traders</label>
                     <div class="trader-toggles">
-                        {% for tid in ["claude", "grok", "gemini", "ensemble"] %}
+                        {% for tid in ["claude", "grok", "gemini", "ensemble", "quant"] %}
                         <button class="trader-pill tag-{{ tid }} {{ 'active' if tid not in config.paused_traders else '' }}"
                                 data-trader="{{ tid }}" onclick="toggleTrader('{{ tid }}', this)">
                             {{ tid }}
@@ -644,7 +646,7 @@
                     {% set bar_w = (cost / max_cost * 100) if max_cost > 0 else 0 %}
                     {% set model_short = model.split(':')[0] if ':' in model else model %}
                     <div class="cost-row">
-                        {% set _tc = {'claude': '#7c5cfc', 'grok': '#f4364c', 'gemini': '#4285f4', 'ensemble': '#fbbf24'} %}
+                        {% set _tc = {'claude': '#7c5cfc', 'grok': '#f4364c', 'gemini': '#4285f4', 'ensemble': '#fbbf24', 'quant': '#10b981'} %}
                         <span class="cost-model-name" style="color: {{ _tc.get(model_short, '#888') }};">
                             {{ model_short }}
                         </span>
@@ -741,6 +743,7 @@
                             {% elif p.trader_id == 'grok' %}Grok 4.1 Reasoning
                             {% elif p.trader_id == 'gemini' %}Gemini 2.5 Pro
                             {% elif p.trader_id == 'ensemble' %}All Models Combined
+                            {% elif p.trader_id == 'quant' %}Logit-Space Signals
                             {% endif %}
                         </div>
                     </div>
@@ -980,22 +983,22 @@
                             <div class="detail-section">
                                 <div class="detail-section-title">Probability Pipeline</div>
                                 <div class="prob-pipeline">
-                                    {% if a.prob_pipeline.raw is not none %}
+                                    {% if a.prob_pipeline.raw is defined and a.prob_pipeline.raw is not none %}
                                     <span class="prob-stage"><span class="stage-label">Raw</span> <span class="stage-val">{{ "%.0f"|format(a.prob_pipeline.raw * 100) }}%</span></span>
                                     {% endif %}
-                                    {% if a.prob_pipeline.calibrated is not none %}
+                                    {% if a.prob_pipeline.calibrated is defined and a.prob_pipeline.calibrated is not none %}
                                     <span class="prob-arrow">&#8594;</span>
                                     <span class="prob-stage"><span class="stage-label">Cal</span> <span class="stage-val">{{ "%.0f"|format(a.prob_pipeline.calibrated * 100) }}%</span></span>
                                     {% endif %}
-                                    {% if a.prob_pipeline.platt is not none %}
+                                    {% if a.prob_pipeline.platt is defined and a.prob_pipeline.platt is not none %}
                                     <span class="prob-arrow">&#8594;</span>
                                     <span class="prob-stage"><span class="stage-label">Platt</span> <span class="stage-val">{{ "%.0f"|format(a.prob_pipeline.platt * 100) }}%</span></span>
                                     {% endif %}
-                                    {% if a.prob_pipeline.market_midpoint is not none %}
+                                    {% if a.prob_pipeline.market_midpoint is defined and a.prob_pipeline.market_midpoint is not none %}
                                     <span class="prob-arrow">&#8594;</span>
                                     <span class="prob-stage"><span class="stage-label">Mkt {{ "%.0f"|format((a.prob_pipeline.market_weight or 0) * 100) }}%</span> <span class="stage-val">{{ "%.0f"|format(a.prob_pipeline.market_midpoint * 100) }}%</span></span>
                                     {% endif %}
-                                    {% if a.prob_pipeline.final is not none %}
+                                    {% if a.prob_pipeline.final is defined and a.prob_pipeline.final is not none %}
                                     <span class="prob-arrow">&#8594;</span>
                                     <span class="prob-stage" style="background: #1a2a1a; border: 1px solid #2d5a2d;"><span class="stage-label">Final</span> <span class="stage-val" style="color: #4ade80;">{{ "%.0f"|format(a.prob_pipeline.final * 100) }}%</span></span>
                                     {% endif %}
@@ -1091,7 +1094,8 @@
             claude: '#7c5cfc',
             grok: '#f4364c',
             gemini: '#4285f4',
-            ensemble: '#fbbf24'
+            ensemble: '#fbbf24',
+            quant: '#10b981'
         };
 
         async function loadChart() {

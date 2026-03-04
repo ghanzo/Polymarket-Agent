@@ -7,6 +7,7 @@
 """
 
 import pytest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch, call
 
 from src.models import Bet, BetStatus, Side, kelly_size, Market
@@ -35,6 +36,8 @@ def _make_open_bet(
         shares=shares,
         token_id=token_id,
         status=BetStatus.OPEN,
+        # Place bet 1 hour ago so it's past the min hold time
+        placed_at=datetime.now(timezone.utc) - timedelta(hours=1),
     )
 
 
@@ -559,8 +562,8 @@ class TestPlaceBetSideLogic:
         assert bet is not None
         assert bet.side == Side.YES
         assert bet.token_id == "tok_yes"
-        # Entry at ask + slippage: midpoint + half_spread + default_bps = 0.60 + 0.02 + 0.0025
-        assert bet.entry_price == pytest.approx(0.6225, abs=0.001)
+        # Entry at ask + Kyle slippage: 0.62 + dynamic_bps (0.8 uncertainty * 2.0 spread_factor * 25 = 40 bps)
+        assert bet.entry_price == pytest.approx(0.624, abs=0.001)
 
     @patch("src.simulator.db")
     def test_buy_no_uses_no_ask_price(self, mock_db):
@@ -589,8 +592,8 @@ class TestPlaceBetSideLogic:
         assert bet is not None
         assert bet.side == Side.NO
         assert bet.token_id == "tok_no"
-        # NO ask + slippage: (1.0 - 0.60) + 0.02 + 0.0025 = 0.4225
-        assert bet.entry_price == pytest.approx(0.4225, abs=0.001)
+        # NO ask + Kyle slippage: 0.42 + dynamic_bps (0.8 uncertainty * 2.0 spread_factor * 25 = 40 bps)
+        assert bet.entry_price == pytest.approx(0.424, abs=0.001)
 
     @patch("src.simulator.db")
     def test_zero_spread_uses_midpoint_plus_slippage(self, mock_db):
@@ -618,8 +621,8 @@ class TestPlaceBetSideLogic:
         bet = sim.place_bet(market, analysis)
 
         assert bet is not None
-        # No spread → entry = midpoint + default_bps (0.0025)
-        assert bet.entry_price == pytest.approx(0.6025, abs=0.001)
+        # No spread → entry = midpoint + Kyle dynamic_bps (0.8 uncertainty * 1.0 spread_factor * 25 = 20 bps)
+        assert bet.entry_price == pytest.approx(0.602, abs=0.001)
 
 
 # ── 5. Simulator: check_resolutions ─────────────────────────────────────
@@ -739,8 +742,8 @@ class TestSpreadCostAccounting:
         bet = sim.place_bet(market, analysis)
 
         assert bet is not None
-        # 0.50 + 0.02 (half spread) + 0.0025 (default slippage)
-        assert bet.entry_price == pytest.approx(0.5225, abs=0.001)
+        # 0.50 + 0.02 (half spread) + Kyle dynamic_bps (1.0 uncertainty * 2.0 spread_factor * 25 = 50 bps)
+        assert bet.entry_price == pytest.approx(0.525, abs=0.001)
 
     @patch("src.simulator.db")
     def test_spread_increases_entry_price_no(self, mock_db):
@@ -766,8 +769,8 @@ class TestSpreadCostAccounting:
         bet = sim.place_bet(market, analysis)
 
         assert bet is not None
-        # NO ask + slippage = (1.0 - 0.60) + 0.02 + 0.0025 = 0.4225
-        assert bet.entry_price == pytest.approx(0.4225, abs=0.001)
+        # NO ask + Kyle slippage = (1.0 - 0.60) + 0.02 + dynamic_bps (0.8 * 2.0 * 25 = 40 bps)
+        assert bet.entry_price == pytest.approx(0.424, abs=0.001)
 
     @patch("src.simulator.db")
     def test_spread_reduces_share_count(self, mock_db):
@@ -960,12 +963,16 @@ class TestBacktesterSpreadAdjustedPnL:
         source = inspect.getsource(backtester.run_backtest)
         assert "spread=assumed_spread" in source or "spread=" in source
 
-    def test_backtester_source_uses_slippage_entry_price(self):
-        """Verify the backtester uses slippage-adjusted entry prices."""
-        import inspect
-        from src import backtester
-        source = inspect.getsource(backtester.run_backtest)
-        assert "apply_slippage" in source
+    def test_backtester_slippage_produces_worse_entry(self):
+        """Slippage-adjusted entry for a YES buy should be >= midpoint."""
+        from src.slippage import apply_slippage
+        midpoint = 0.50
+        spread = 0.04
+        entry_price, slippage_bps = apply_slippage(
+            midpoint=midpoint, spread=spread, side="YES", amount=50, order_book=None,
+        )
+        assert entry_price >= midpoint, "Slippage should worsen entry price for buyer"
+        assert slippage_bps >= 0
 
     def test_backtest_assumed_spread_config(self):
         """Verify the BACKTEST_ASSUMED_SPREAD config exists."""

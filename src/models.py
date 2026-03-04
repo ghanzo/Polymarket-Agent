@@ -24,7 +24,7 @@ class BetStatus(str, Enum):
     EXITED = "EXITED"
 
 
-TRADER_IDS = ["claude", "grok", "gemini", "ensemble"]
+TRADER_IDS = ["claude", "grok", "gemini", "ensemble", "quant"]
 
 
 @dataclass
@@ -42,6 +42,7 @@ class Market:
     midpoint: float | None = None
     spread: float | None = None
     price_history: list[dict] | None = None
+    price_history_daily: list[dict] | None = None
     order_book: dict | None = None
     event_id: str | None = None
     event_title: str | None = None

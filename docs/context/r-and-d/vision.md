@@ -39,6 +39,9 @@ A model that says "70% confident" and is right 70% of the time is more useful th
 ### Cost-aware analysis
 Not every market deserves a $0.15 LLM analysis call. ML pre-screening (40+ features, zero API cost) filters 80-90% of markets. The funnel: free features → cheap ML → expensive LLM.
 
+### Dual alpha sources
+LLM ensemble analysis and quantitative signals are complementary, not competing. The quant agent (logit-space statistics, structural arbitrage, particle filtering, Monte Carlo) catches mispricings that LLMs miss — and at zero API cost. Both run in parallel, each with independent portfolios, enabling direct performance comparison.
+
 ---
 
 ## Non-Goals
@@ -46,18 +49,19 @@ Not every market deserves a $0.15 LLM analysis call. ML pre-screening (40+ featu
 - **Not HFT**: We analyze markets on 5-minute cycles, not microseconds. Sub-second execution is not a goal (though WebSocket feeds will improve from minutes to seconds).
 - **Not market-making**: We take directional positions based on perceived mispricings, not providing liquidity for spread capture.
 - **Not multi-platform**: We focus on Polymarket only. Cross-platform arbitrage (Kalshi, etc.) is aspirational, not planned.
+- **Not replacing LLMs with quant**: The quant agent complements the LLM pipeline — it provides independent alpha from pure math. Eventually the best quant components (particle filter, copula risk) will be integrated into the LLM pipeline as enhancements, not replacements.
 - **Not autonomous**: The system recommends and executes paper trades, but real-money deployment requires human oversight and explicit activation.
 
 ---
 
-## Current Grade: A
+## Current Grade: A-
 
 | Dimension | Grade | Notes |
 |-----------|-------|-------|
 | Signal Quality | A | Multi-model ensemble, debate, calibration, longshot bias |
-| Risk Management | A- | Kelly sizing, trailing stops, drawdown limits, slippage |
+| Risk Management | A- | Kelly sizing, trailing stops, drawdown limits, slippage. Fee bug fixed 2026-03-03. |
 | Architecture | A- | Modular, concurrent, well-split responsibilities |
-| Testing | B+ | 682 tests, but depth gaps in financial accounting |
+| Testing | B- | 687 tests, depth gaps in financial accounting. Source-inspection anti-patterns reduced. |
 | Data Pipeline | B+ | ML pre-screening, but still HTTP polling (no WebSocket) |
 
-Target: **A+** — requires testing hardened to A, WebSocket real-time data, fee bug fixed.
+Target: **A+** — requires testing hardened to A, WebSocket real-time data.

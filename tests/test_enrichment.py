@@ -209,6 +209,7 @@ class TestScannerEventEnrichment:
         with patch("src.scanner.config") as mock_config:
             mock_config.USE_EVENT_CONTEXT = True
             mock_config.SIM_MAX_SPREAD = 0.10
+            mock_config.QUANT_MAX_RELATED_MARKETS = 50
             result = scanner._enrich(market)
 
         assert result.event_id == "evt_1"

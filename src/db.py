@@ -209,18 +209,25 @@ def _create_auxiliary_tables(cur):
 
 
 def _add_constraints_and_keys(conn):
-    """Add CHECK constraints and foreign keys (separate transaction per statement)."""
+    """Add CHECK constraints and foreign keys (separate transaction per statement).
+
+    Uses DO $$ BEGIN ... EXCEPTION WHEN duplicate_object $$ pattern for
+    Postgres 16 compatibility (ADD CONSTRAINT IF NOT EXISTS is 17+ only).
+    """
     with conn.cursor() as cur:
-        for stmt in [
-            "ALTER TABLE bets ADD CONSTRAINT IF NOT EXISTS chk_amount_positive CHECK (amount > 0)",
-            "ALTER TABLE bets ADD CONSTRAINT IF NOT EXISTS chk_price_range CHECK (entry_price BETWEEN 0 AND 1)",
-            "ALTER TABLE bets ADD CONSTRAINT IF NOT EXISTS chk_shares_positive CHECK (shares > 0)",
-            "ALTER TABLE portfolio ADD CONSTRAINT IF NOT EXISTS chk_balance_non_negative CHECK (balance >= 0)",
-            "ALTER TABLE analysis_log ADD CONSTRAINT IF NOT EXISTS chk_confidence_range CHECK (confidence BETWEEN 0 AND 1)",
-            "ALTER TABLE analysis_log ADD CONSTRAINT IF NOT EXISTS chk_est_prob_range CHECK (estimated_probability BETWEEN 0 AND 1)",
+        for table, name, check_expr in [
+            ("bets", "chk_amount_positive", "amount > 0"),
+            ("bets", "chk_price_range", "entry_price BETWEEN 0 AND 1"),
+            ("bets", "chk_shares_positive", "shares > 0"),
+            ("portfolio", "chk_balance_non_negative", "balance >= 0"),
+            ("analysis_log", "chk_confidence_range", "confidence BETWEEN 0 AND 1"),
+            ("analysis_log", "chk_est_prob_range", "estimated_probability BETWEEN 0 AND 1"),
         ]:
             try:
-                cur.execute(stmt)
+                cur.execute(f"""DO $$ BEGIN
+                    ALTER TABLE {table} ADD CONSTRAINT {name} CHECK ({check_expr});
+                EXCEPTION WHEN duplicate_object THEN NULL;
+                END $$""")
             except Exception:
                 conn.rollback()
 
@@ -389,7 +396,9 @@ def resolve_bet(bet_id: int, won: bool, exit_price: float):
                 pnl = payout - cost
                 # Apply fee on profits (Polymarket charges ~2% on winnings)
                 if pnl > 0:
-                    pnl -= pnl * config.SIM_FEE_RATE
+                    fee_amount = pnl * config.SIM_FEE_RATE
+                    pnl -= fee_amount
+                    payout -= fee_amount
                 status = BetStatus.WON if won else BetStatus.LOST
 
                 cur.execute("""
@@ -430,7 +439,9 @@ def close_bet(bet_id: int, exit_price: float):
                 pnl = payout - cost
                 # Apply fee on profits (Polymarket charges ~2% on winnings)
                 if pnl > 0:
-                    pnl -= pnl * config.SIM_FEE_RATE
+                    fee_amount = pnl * config.SIM_FEE_RATE
+                    pnl -= fee_amount
+                    payout -= fee_amount
                 won = pnl > 0
                 cur.execute("""
                     UPDATE bets SET status=%s, exit_price=%s, pnl=%s, resolved_at=%s
@@ -457,11 +468,11 @@ def close_bet(bet_id: int, exit_price: float):
 
 
 def get_resolved_bets(trader_id: str) -> list[Bet]:
-    """Return all WON/LOST bets for a trader."""
+    """Return all WON/LOST/EXITED bets for a trader."""
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                "SELECT * FROM bets WHERE trader_id = %s AND status IN ('WON', 'LOST') ORDER BY resolved_at",
+                "SELECT * FROM bets WHERE trader_id = %s AND status IN ('WON', 'LOST', 'EXITED') ORDER BY resolved_at",
                 (trader_id,),
             )
             return [_row_to_bet(r) for r in cur.fetchall()]

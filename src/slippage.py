@@ -89,9 +89,9 @@ def estimate_fill_price(
 
     # If we couldn't fill the full amount, the remaining gets worse pricing
     if remaining > 0:
-        # Use worst level price + default slippage for the unfilled portion
+        # Use worst level price + dynamic slippage for the unfilled portion
         worst_price = float(levels[-1].get("price", midpoint))
-        extra_bps = config.DEFAULT_SLIPPAGE_BPS / 10000
+        extra_bps = _dynamic_slippage_bps(midpoint, spread) / 10000
         unfilled_price = worst_price + extra_bps
         unfilled_shares = remaining / unfilled_price
         total_cost += remaining
@@ -138,10 +138,31 @@ def _baseline_price(midpoint: float, spread: float, side: str) -> float:
         return (1.0 - midpoint) + half_spread
 
 
+def _dynamic_slippage_bps(midpoint: float, spread: float) -> float:
+    """Kyle-motivated state-dependent slippage estimate.
+
+    Markets near 50% have highest uncertainty (most informed trading,
+    most price impact). Markets near extremes have low uncertainty.
+    Wide spreads signal thin liquidity → more slippage.
+
+    Returns slippage in basis points.
+    """
+    # uncertainty: 1.0 at p=0.5, 0.0 at extremes (p=0 or p=1)
+    uncertainty = 1.0 - 2.0 * abs(midpoint - 0.5)
+    # Floor at 0.3 so extreme markets still get some slippage
+    uncertainty = max(0.3, uncertainty)
+
+    # Wide spreads signal thin liquidity → multiplicative penalty
+    # Normalize to 2-cent baseline spread
+    spread_factor = max(1.0, spread / 0.02) if spread > 0 else 1.0
+
+    return config.DEFAULT_SLIPPAGE_BPS * uncertainty * spread_factor
+
+
 def _fallback_price(midpoint: float, spread: float, side: str) -> float:
-    """Compute entry price using spread + default BPS when no book available."""
-    default_bps = config.DEFAULT_SLIPPAGE_BPS / 10000
-    return _baseline_price(midpoint, spread, side) + default_bps
+    """Compute entry price using spread + dynamic BPS when no book available."""
+    dynamic_bps = _dynamic_slippage_bps(midpoint, spread) / 10000
+    return _baseline_price(midpoint, spread, side) + dynamic_bps
 
 
 def _compute_slippage_bps(fill_price: float, baseline: float) -> float:

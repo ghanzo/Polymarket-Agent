@@ -10,7 +10,7 @@
 ┌─────────────────────────────────────────────────────┐
 │                  ORCHESTRATION                       │
 │  cycle_runner.py  run_sim.py  dashboard.py          │
-│  (8-step pipeline, CLI entry, web UI)               │
+│  (9-step pipeline, CLI entry, web UI)               │
 ├─────────────────────────────────────────────────────┤
 │                    TRADING                           │
 │  simulator.py  backtester.py                        │
@@ -20,7 +20,9 @@
 │  analyzer.py  learning.py  strategies.py            │
 │  prescreener.py  web_search.py  prompts.py          │
 │  cost_tracker.py                                    │
-│  (AI models, ML pre-screening, signals, calibration)│
+│  quant/signals.py  quant/agent.py                   │
+│  (AI models, ML pre-screening, quant signals,       │
+│   calibration)                                      │
 ├─────────────────────────────────────────────────────┤
 │                 INFRASTRUCTURE                       │
 │  api.py  scanner.py  slippage.py  db.py             │
@@ -36,7 +38,7 @@
 
 ---
 
-## 8-Step Cycle Data Flow
+## 9-Step Cycle Data Flow
 
 The core pipeline in `cycle_runner.py`, shared by both CLI (`run_sim.py`) and dashboard (`dashboard.py`):
 
@@ -44,13 +46,19 @@ The core pipeline in `cycle_runner.py`, shared by both CLI (`run_sim.py`) and da
 Step 1: Reset Weights
   learning.reset_weights() → fresh model weights for this cycle
 
-Step 2: Scan Markets
-  scanner.scan() → ~1000 markets from Gamma API
+Step 2: Scan Markets (LLM)
+  scanner.scan(max=50) → ~1000 markets from Gamma API
   ↓ filters by volume, liquidity, time-to-resolution
 
 Step 3: Pre-Screen
   prescreener.filter() → 40+ features, heuristic/ML scoring
   ↓ filters 80-90% of markets (zero API cost)
+
+Step 3.5: Quant Agent (separate wider scan)
+  scanner.scan(max=200, depth=2000) → wider market universe
+  ↓ quant_agent.analyze() on each — pure math, zero API cost
+  ↓ own cooldown (0.5h vs 3h for LLMs), bypasses prescreener
+  ↓ 6 logit-space signals + structural arb detection
 
 Step 4: Enrich
   api.get_orderbook() + web_search() → order book + news context
@@ -63,10 +71,12 @@ Step 5: Analyze
 Step 6: Ensemble
   analyzer.ensemble() → weighted voting or multi-round debate
   ↓ applies Platt scaling, market consensus, disagreement penalty
+  ↓ quant excluded from LLM ensemble (independent pipeline)
 
 Step 7: Place Bets
   simulator.place_bet() → Kelly sizing, risk limits, slippage
-  ↓ probability pipeline: raw → calibrated → Platt → longshot → signals
+  ↓ LLMs: raw → calibrated → Platt → longshot → signals
+  ↓ quant: raw → longshot only (skips LLM-specific adjustments)
 
 Step 8: Review
   simulator.review_performance() → Brier scores, P&L, leaderboard
@@ -92,6 +102,7 @@ db ←── learning ←── simulator
 
 prompts ←── analyzer
         ←── prescreener
+        ←── quant.agent
 
 cost_tracker ←── analyzer
              ←── web_search
@@ -99,6 +110,9 @@ cost_tracker ←── analyzer
 slippage ←── simulator
 
 strategies ←── simulator
+
+quant.signals ←── quant.agent ←── cycle_runner
+                               ←── run_quant
 
 cycle_runner ←── run_sim
              ←── dashboard

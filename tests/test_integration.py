@@ -254,8 +254,8 @@ class TestEnsembleAggregation:
         ]
 
         analysis = ensemble.aggregate(market, results)
-        # With equal weights on opposing sides, should skip
-        assert analysis.recommendation in (Recommendation.SKIP, Recommendation.BUY_YES, Recommendation.BUY_NO)
+        # With equal weights on opposing sides + a SKIP, no weighted majority — should skip
+        assert analysis.recommendation == Recommendation.SKIP
 
     def test_all_skip(self):
         """All models SKIP → ensemble should SKIP."""
@@ -349,8 +349,8 @@ class TestConfigOverrides:
         assert c.ML_PRESCREENER_ENABLED is True
 
     def test_all_trader_ids_exist(self):
-        assert len(TRADER_IDS) == 4
-        for tid in ["claude", "gemini", "grok", "ensemble"]:
+        assert len(TRADER_IDS) == 5
+        for tid in ["claude", "gemini", "grok", "ensemble", "quant"]:
             assert tid in TRADER_IDS
 
 

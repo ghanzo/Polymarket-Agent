@@ -6,6 +6,7 @@ from unittest.mock import patch
 from src.slippage import (
     estimate_fill_price, apply_slippage,
     _fallback_price, _baseline_price, _compute_slippage_bps,
+    _dynamic_slippage_bps,
 )
 
 
@@ -183,24 +184,41 @@ class TestBaselinePrice:
 # ---------------------------------------------------------------------------
 
 class TestFallbackPrice:
-    """Tests for fallback pricing when no book available."""
+    """Tests for fallback pricing when no book available (Kyle state-dependent)."""
 
-    def test_yes_side(self):
-        """YES fallback: baseline + default_bps."""
+    def test_yes_side_50_50(self):
+        """YES fallback at midpoint=0.50: max uncertainty, spread_factor=2.0."""
+        # uncertainty=1.0, spread_factor=0.04/0.02=2.0 → 25*1.0*2.0=50 bps=0.005
         price = _fallback_price(0.50, 0.04, "YES")
-        assert price == pytest.approx(0.52 + 0.0025, abs=0.001)
+        assert price == pytest.approx(0.52 + 0.005, abs=0.001)
 
-    def test_no_side(self):
-        """NO fallback: baseline + default_bps."""
+    def test_no_side_50_50(self):
+        """NO fallback at midpoint=0.50: max uncertainty, spread_factor=2.0."""
         price = _fallback_price(0.50, 0.04, "NO")
-        assert price == pytest.approx(0.52 + 0.0025, abs=0.001)
+        assert price == pytest.approx(0.52 + 0.005, abs=0.001)
+
+    def test_extreme_midpoint_less_slippage(self):
+        """Markets near extremes get less slippage (Kyle: less uncertainty)."""
+        # midpoint=0.90 → uncertainty=1-2*0.4=0.2 → floored to 0.3
+        # spread_factor=0.04/0.02=2.0 → 25*0.3*2.0=15 bps=0.0015
+        price = _fallback_price(0.90, 0.04, "YES")
+        assert price == pytest.approx(0.92 + 0.0015, abs=0.001)
 
     def test_asymmetric_midpoint(self):
-        """Verify fallback with non-0.5 midpoint."""
+        """Non-0.5 midpoint: reduced uncertainty → less slippage."""
+        # midpoint=0.70 → uncertainty=1-2*0.2=0.6, spread_factor=2.0
+        # 25*0.6*2.0=30 bps=0.003
         price = _fallback_price(0.70, 0.04, "YES")
-        assert price == pytest.approx(0.72 + 0.0025, abs=0.001)
+        assert price == pytest.approx(0.72 + 0.003, abs=0.001)
         price_no = _fallback_price(0.70, 0.04, "NO")
-        assert price_no == pytest.approx(0.32 + 0.0025, abs=0.001)
+        assert price_no == pytest.approx(0.32 + 0.003, abs=0.001)
+
+    def test_narrow_spread_less_slippage(self):
+        """Narrow spread (below 2-cent baseline) → spread_factor=1.0."""
+        # midpoint=0.50, spread=0.01 → uncertainty=1.0, spread_factor=1.0
+        # 25*1.0*1.0=25 bps=0.0025
+        price = _fallback_price(0.50, 0.01, "YES")
+        assert price == pytest.approx(0.505 + 0.0025, abs=0.001)
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +256,62 @@ class TestComputeSlippageBps:
 
 
 # ---------------------------------------------------------------------------
+# _dynamic_slippage_bps — Kyle state-dependent slippage
+# ---------------------------------------------------------------------------
+
+class TestDynamicSlippageBps:
+    """Tests for Kyle-motivated state-dependent slippage estimation."""
+
+    def test_max_uncertainty_at_50_50(self):
+        """Midpoint=0.50 → max uncertainty=1.0 → full BPS."""
+        bps = _dynamic_slippage_bps(0.50, 0.02)
+        # uncertainty=1.0, spread_factor=1.0 → 25*1.0*1.0=25
+        assert bps == pytest.approx(25.0, abs=0.1)
+
+    def test_low_uncertainty_at_extreme(self):
+        """Midpoint near extreme → low uncertainty → floored at 0.3."""
+        bps = _dynamic_slippage_bps(0.95, 0.02)
+        # uncertainty=1-2*0.45=0.1 → floored to 0.3, spread_factor=1.0
+        assert bps == pytest.approx(25 * 0.3, abs=0.1)
+
+    def test_moderate_uncertainty(self):
+        """Midpoint=0.70 → uncertainty=0.6."""
+        bps = _dynamic_slippage_bps(0.70, 0.02)
+        assert bps == pytest.approx(25 * 0.6, abs=0.1)
+
+    def test_wide_spread_multiplier(self):
+        """Wide spread (6 cents) → spread_factor=3.0."""
+        bps = _dynamic_slippage_bps(0.50, 0.06)
+        # uncertainty=1.0, spread_factor=0.06/0.02=3.0 → 25*3.0=75
+        assert bps == pytest.approx(75.0, abs=0.1)
+
+    def test_zero_spread(self):
+        """Zero spread → spread_factor=1.0 (no penalty)."""
+        bps = _dynamic_slippage_bps(0.50, 0.0)
+        assert bps == pytest.approx(25.0, abs=0.1)
+
+    def test_narrow_spread_floor(self):
+        """Spread below baseline → spread_factor floored at 1.0."""
+        bps = _dynamic_slippage_bps(0.50, 0.01)
+        # spread_factor = max(1.0, 0.01/0.02) = 1.0
+        assert bps == pytest.approx(25.0, abs=0.1)
+
+    def test_monotonic_in_uncertainty(self):
+        """Slippage decreases as midpoint moves away from 0.50."""
+        bps_50 = _dynamic_slippage_bps(0.50, 0.02)
+        bps_60 = _dynamic_slippage_bps(0.60, 0.02)
+        bps_70 = _dynamic_slippage_bps(0.70, 0.02)
+        bps_80 = _dynamic_slippage_bps(0.80, 0.02)
+        assert bps_50 > bps_60 > bps_70 > bps_80
+
+    def test_symmetric_around_midpoint(self):
+        """Slippage is symmetric: midpoint=0.30 equals midpoint=0.70."""
+        bps_30 = _dynamic_slippage_bps(0.30, 0.02)
+        bps_70 = _dynamic_slippage_bps(0.70, 0.02)
+        assert bps_30 == pytest.approx(bps_70, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
 # Config integration
 # ---------------------------------------------------------------------------
 
@@ -246,11 +320,13 @@ class TestSlippageConfig:
 
     @patch("src.slippage.config")
     def test_default_bps_used_in_fallback(self, mock_config):
-        """DEFAULT_SLIPPAGE_BPS affects fallback price."""
+        """DEFAULT_SLIPPAGE_BPS affects fallback price (Kyle-scaled)."""
         mock_config.DEFAULT_SLIPPAGE_BPS = 50  # 0.5%
         mock_config.USE_ORDERBOOK_SLIPPAGE = True
+        # At midpoint=0.50, spread=0.04: uncertainty=1.0, spread_factor=2.0
+        # 50 * 1.0 * 2.0 = 100 bps = 0.01
         price = _fallback_price(0.50, 0.04, "YES")
-        assert price == pytest.approx(0.52 + 0.005, abs=0.001)
+        assert price == pytest.approx(0.52 + 0.01, abs=0.001)
 
     @patch("src.slippage.config")
     def test_higher_default_bps_higher_price(self, mock_config):

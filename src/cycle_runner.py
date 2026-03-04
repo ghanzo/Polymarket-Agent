@@ -1,9 +1,10 @@
 """Shared simulation cycle logic used by both run_sim.py and dashboard.py.
 
-Provides the core 8-step pipeline:
+Provides the core 9-step pipeline:
 1. Reset learning weights
 2. Scan markets
 3. ML pre-screening
+3.5. Quant agent analysis (parallel, no LLM cost)
 4. Fetch web context
 5. Per-model analysis
 6. Ensemble aggregation
@@ -20,6 +21,7 @@ from src.api import PolymarketAPI
 from src.analyzer import get_individual_analyzers, EnsembleAnalyzer, _build_web_context, cost_tracker
 from src.config import config
 from src.models import Analysis, Market, Recommendation, TRADER_IDS
+from src.quant.agent import QuantAgent
 from src.simulator import Simulator
 from src import db
 
@@ -71,72 +73,130 @@ def run_cycle(
     paused = set(config.PAUSED_TRADERS) if hasattr(config, "PAUSED_TRADERS") else set()
 
     cli = PolymarketAPI()
-    logger.info("[1/8] Scanning markets...")
-    from src.scanner import MarketScanner
-    scanner = MarketScanner(cli)
-    markets = scanner.scan(max_markets=config.SIM_MAX_MARKETS)
-    result.markets_scanned = len(markets)
-    logger.info("Found %d candidates", len(markets))
+    try:
+        logger.info("[1/9] Scanning markets...")
+        from src.scanner import MarketScanner
+        scanner = MarketScanner(cli)
+        markets = scanner.scan(max_markets=config.SIM_MAX_MARKETS)
+        result.markets_scanned = len(markets)
+        logger.info("Found %d candidates", len(markets))
 
-    # 2. ML pre-screening
-    if config.ML_PRESCREENER_ENABLED:
-        logger.info("[2/8] ML pre-screening...")
-        from src.prescreener import MarketPreScreener
-        prescreener = MarketPreScreener()
-        pre_count = len(markets)
-        markets = prescreener.filter(markets)
-        result.markets_prescreened = pre_count
-        logger.info("Pre-screener: %d → %d markets (saved %d LLM calls)",
-                    pre_count, len(markets), pre_count - len(markets))
-    else:
-        logger.info("[2/8] Pre-screening disabled, using all %d markets", len(markets))
-        result.markets_prescreened = len(markets)
+        # 2. ML pre-screening
+        if config.ML_PRESCREENER_ENABLED:
+            logger.info("[2/9] ML pre-screening...")
+            from src.prescreener import MarketPreScreener
+            prescreener = MarketPreScreener()
+            pre_count = len(markets)
+            markets = prescreener.filter(markets)
+            result.markets_prescreened = pre_count
+            logger.info("Pre-screener: %d → %d markets (saved %d LLM calls)",
+                        pre_count, len(markets), pre_count - len(markets))
+        else:
+            logger.info("[2/9] Pre-screening disabled, using all %d markets", len(markets))
+            result.markets_prescreened = len(markets)
 
-    # 3. Get analyzers
-    analyzers = get_individual_analyzers()
-    if not analyzers:
-        logger.warning("No AI analyzers available — check API keys")
-        return result
+        # 3. Quant agent (zero cost, separate wider scan)
+        all_analyses: dict[str, list[tuple[Market, Analysis]]] = {}
+        if config.QUANT_AGENT_ENABLED and "quant" not in paused:
+            _status("quant", "scanning")
+            # Temporarily widen scan parameters for quant's zero-cost analysis
+            saved_depth = config.SIM_SCAN_DEPTH
+            saved_max = config.SIM_MAX_MARKETS
+            saved_max_per_event = config.SIM_MAX_BETS_PER_EVENT
+            config.SIM_SCAN_DEPTH = config.QUANT_SCAN_DEPTH
+            config.SIM_MAX_MARKETS = config.QUANT_MAX_MARKETS
+            config.SIM_MAX_BETS_PER_EVENT = config.QUANT_MAX_MARKETS_PER_EVENT
+            try:
+                quant_scanner = MarketScanner(cli)
+                quant_markets = quant_scanner.scan(max_markets=config.QUANT_MAX_MARKETS)
+            finally:
+                config.SIM_SCAN_DEPTH = saved_depth
+                config.SIM_MAX_MARKETS = saved_max
+                config.SIM_MAX_BETS_PER_EVENT = saved_max_per_event
+            logger.info("[quant] Scanned %d markets (vs %d for LLMs)",
+                        len(quant_markets), len(markets))
 
-    # 4. Fetch web context
-    logger.info("[3/8] Fetching web context...")
-    web_contexts: dict[str, str] = {}
-    for market in markets:
-        ctx = _build_web_context(market)
-        web_contexts[market.id] = ctx
-        if ctx:
-            logger.info("  Web context for: %s", market.question[:50])
-    result.markets_enriched = sum(1 for c in web_contexts.values() if c)
-    cache_stats = cost_tracker.cache_stats()
-    logger.info("Enriched %d markets (cache: %d hits, %d misses, %.0f%% hit rate)",
-                result.markets_enriched, cache_stats["hits"], cache_stats["misses"],
-                cache_stats["hit_rate"] * 100)
+            _status("quant", "analyzing")
+            quant = QuantAgent()
+            quant_analyses = []
+            for market in quant_markets:
+                _status("quant", "analyzing", current_market=market.question[:50])
+                try:
+                    if db.is_analysis_on_cooldown("quant", market.id, config.QUANT_ANALYSIS_COOLDOWN_HOURS):
+                        continue
+                    analysis = quant.analyze(market)
+                    quant_analyses.append((market, analysis))
+                    db.save_analysis(
+                        "quant", market.id, analysis.model,
+                        analysis.recommendation.value,
+                        analysis.confidence, analysis.estimated_probability,
+                        analysis.reasoning,
+                        category=analysis.category,
+                        extras=analysis.extras,
+                    )
+                except Exception as e:
+                    logger.warning("[quant] Error on %s: %s", market.question[:40], e)
+            all_analyses["quant"] = quant_analyses
+            _status("quant", "idle")
+            logger.info("[quant] Analyzed %d markets, %d actionable",
+                        len(quant_markets), sum(1 for _, a in quant_analyses
+                                                if a.recommendation != Recommendation.SKIP))
 
-    # 5. Per-model analysis
-    logger.info("[4/8] Running per-model analysis...")
-    all_analyses = _run_analyses(analyzers, markets, web_contexts, parallel_analysis, _status)
-    for tid in all_analyses:
-        result.errors_by_trader[tid] = 0  # errors tracked inside _run_analyses
-    logger.info("[5/8] All models finished analysis")
+        # 4. Get analyzers
+        analyzers = get_individual_analyzers()
+        has_any_analyses = any(analyses for analyses in all_analyses.values())
+        if not analyzers:
+            logger.warning("No AI analyzers available — check API keys")
+            if not has_any_analyses:
+                return result
 
-    # 6. Ensemble aggregation
-    all_analyses = _run_ensemble(analyzers, markets, all_analyses, web_contexts, paused, result, _status)
-    result.analyses_by_trader = all_analyses
+        # 5. Fetch web context (LLM analyzers only — quant doesn't need it)
+        if analyzers:
+            logger.info("[4/9] Fetching web context...")
+            web_contexts: dict[str, str] = {}
+            for market in markets:
+                ctx = _build_web_context(market)
+                web_contexts[market.id] = ctx
+                if ctx:
+                    logger.info("  Web context for: %s", market.question[:50])
+            result.markets_enriched = sum(1 for c in web_contexts.values() if c)
+            cache_stats = cost_tracker.cache_stats()
+            logger.info("Enriched %d markets (cache: %d hits, %d misses, %.0f%% hit rate)",
+                        result.markets_enriched, cache_stats["hits"], cache_stats["misses"],
+                        cache_stats["hit_rate"] * 100)
+        else:
+            web_contexts = {}
 
-    # 7-8. Place bets, update positions, performance review, leaderboard
-    _place_bets_and_review(cli, all_analyses, result, cycle_number, _status)
+        # 6. Per-model analysis
+        if analyzers:
+            logger.info("[5/9] Running per-model analysis...")
+            llm_analyses = _run_analyses(analyzers, markets, web_contexts, parallel_analysis, _status)
+            all_analyses.update(llm_analyses)
+            for tid in llm_analyses:
+                result.errors_by_trader[tid] = 0
+            logger.info("[6/9] All models finished analysis")
 
-    # End-of-cycle metrics
-    latency = cost_tracker.latency_stats()
-    costs = cost_tracker.daily_by_model()
-    calls = cost_tracker.daily_calls()
-    logger.info("--- CYCLE METRICS ---")
-    logger.info("AI spend: $%.4f total | %s",
-                cost_tracker.daily_total(),
-                " | ".join(f"{k}: ${v:.4f} ({calls.get(k, 0)} calls)" for k, v in costs.items()))
-    for model, stats in latency.items():
-        logger.info("Latency [%s]: avg=%.1fs  p95=%.1fs  (%d calls)",
-                     model, stats["avg"], stats["p95"], stats["count"])
+        # 7. Ensemble aggregation (LLM models only — quant is independent)
+        if analyzers and len(analyzers) >= 2:
+            all_analyses = _run_ensemble(analyzers, markets, all_analyses, web_contexts, paused, result, _status)
+        result.analyses_by_trader = all_analyses
+
+        # 8-9. Place bets, update positions, performance review, leaderboard
+        _place_bets_and_review(cli, all_analyses, result, cycle_number, _status)
+
+        # End-of-cycle metrics
+        latency = cost_tracker.latency_stats()
+        costs = cost_tracker.daily_by_model()
+        calls = cost_tracker.daily_calls()
+        logger.info("--- CYCLE METRICS ---")
+        logger.info("AI spend: $%.4f total | %s",
+                    cost_tracker.daily_total(),
+                    " | ".join(f"{k}: ${v:.4f} ({calls.get(k, 0)} calls)" for k, v in costs.items()))
+        for model, stats in latency.items():
+            logger.info("Latency [%s]: avg=%.1fs  p95=%.1fs  (%d calls)",
+                         model, stats["avg"], stats["p95"], stats["count"])
+    finally:
+        cli.close()
 
     return result
 
@@ -195,13 +255,15 @@ def _run_ensemble(analyzers, markets, all_analyses, web_contexts, paused, result
     if len(analyzers) < 2 or "ensemble" in paused:
         return all_analyses
 
-    logger.info("[5/8] Running ensemble...")
+    logger.info("[7/9] Running ensemble...")
     ensemble = EnsembleAnalyzer(analyzers)
     all_analyses["ensemble"] = []
     status_cb("ensemble", "analyzing")
 
     market_results: dict[str, list[Analysis]] = {}
     for tid, analyses in all_analyses.items():
+        if tid == "quant":
+            continue  # Quant is independent — don't include in LLM ensemble
         for market, analysis in analyses:
             market_results.setdefault(market.id, []).append(analysis)
 
@@ -234,7 +296,7 @@ def _run_ensemble(analyzers, markets, all_analyses, web_contexts, paused, result
 
 def _place_bets_and_review(cli, all_analyses, result, cycle_number, status_cb):
     """Place bets, update positions, run performance reviews, and print leaderboard."""
-    logger.info("[6/8] Placing bets and updating positions...")
+    logger.info("[8/9] Placing bets and updating positions...")
     for tid, market_analyses in all_analyses.items():
         status_cb(tid, "betting")
         sim = Simulator(cli, tid)
@@ -256,7 +318,7 @@ def _place_bets_and_review(cli, all_analyses, result, cycle_number, status_cb):
         status_cb(tid, "idle")
         logger.info("[%s] %d bets placed", tid, cycle_bets)
 
-    logger.info("[7/8] Performance reviews...")
+    logger.info("[9/9] Performance reviews...")
     for tid in TRADER_IDS:
         try:
             sim = Simulator(cli, tid)
@@ -272,7 +334,7 @@ def _place_bets_and_review(cli, all_analyses, result, cycle_number, status_cb):
         except Exception as e:
             logger.warning("Performance review failed for %s: %s", tid, e)
 
-    logger.info("[8/8] LEADERBOARD")
+    logger.info("LEADERBOARD")
     for p in db.get_all_portfolios():
         logger.info("  %-12s $%9.2f  P&L $%+9.2f  %d bets  %.0f%% win",
                      p.trader_id, p.portfolio_value, p.total_pnl, p.total_bets, p.win_rate * 100)

@@ -32,6 +32,12 @@ class PolymarketAPI:
     def close(self):
         self._client.close()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
     # --- Internal helpers ---
 
     def _gamma(self, endpoint: str, params: dict = None):
@@ -128,11 +134,11 @@ class PolymarketAPI:
     def clob_book(self, token_id: str) -> dict:
         return self._clob("/book", {"token_id": token_id})
 
-    def price_history(self, token_id: str, interval: str = "1d") -> list[dict]:
+    def price_history(self, token_id: str, interval: str = "1d", fidelity: int = 10) -> list[dict]:
         result = self._clob("/prices-history", {
             "market": token_id,
             "interval": interval,
-            "fidelity": 10,
+            "fidelity": fidelity,
         })
         # Normalize: may be wrapped in {"history": [...]} or bare list
         if isinstance(result, dict):

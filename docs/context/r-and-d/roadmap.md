@@ -1,8 +1,8 @@
 # Roadmap
 
-> Current grade: **A** | Target: **A+** (production-ready)
-> 682 tests passing | 21 source modules | GitHub Actions CI active
-> Last updated: 2026-03-03
+> Current grade: **A-** | Target: **A+** (production-ready)
+> 823 tests passing | 24 source modules | GitHub Actions CI active
+> Last updated: 2026-03-04
 
 ---
 
@@ -12,9 +12,28 @@ These are blockers for real-money trading. Do them in order.
 
 | # | Task | Effort | Why |
 |---|------|--------|-----|
-| 1 | **Fix fee accounting bug** | 30 min | `resolve_bet()` and `close_bet()` deduct fees from PnL tracking but NOT from balance payout (~2% overstatement per winning bet). See [debug-log](../testing/debug-log.md#bug-2). |
-| 2 | **Fix $235.29 balance discrepancy** | 30 min | Deleted corrupt bets subtracted payouts but didn't add back original bet amounts in Grok portfolio. |
-| 3 | **Phase T1: Balance accounting tests** | 4-6 hrs | End-to-end tests proving `balance_after = balance_before - cost + payout - fee`. See [testing-framework](../testing/testing-framework.md) Phase T1. |
+| 1 | ~~Fix fee accounting bug~~ | DONE | Fee now deducted from both pnl AND payout in `resolve_bet()` and `close_bet()`. 5 behavioral tests added. |
+| 2 | ~~Fix $211.99 balance discrepancy~~ | DONE | Recalculated Grok balance from bet records. Conservation invariant now holds to 10⁻¹². (Was documented as $235.29, actual was $211.99 after fee fix.) |
+| 3 | ~~Phase T1: Balance accounting tests~~ | DONE | 25 lifecycle tests in `test_balance_lifecycle.py`: full lifecycle (YES/NO win/loss), close profit/loss, conservation invariant, double-resolve, edge cases, algebraic invariant. |
+
+---
+
+## Phase Q: Quant Agent (Active)
+
+Parallel quantitative trading agent — zero LLM cost, pure math signals.
+
+| # | Task | Effort | Status |
+|---|------|--------|--------|
+| Q1 | **MVP Quant Agent** — logit-space signals, structural arb detection, QuantAgent class, cycle_runner + dashboard integration | 1-2 days | **DONE** |
+| Q1.5 | **Review & Tuning** — 6 bug fixes, 8 magic numbers extracted to config, momentum/reversion thresholds tuned | 0.5 day | **DONE** |
+| Q1.6 | **Deep Review Fixes** — classify_market args, NegRisk arb sum, extras merge, NaN filtering, edge_zscore confirmation bias, arb threshold | 0.5 day | **DONE** |
+| Q1.7 | **Data Pipeline Overhaul** — daily price history (7d weekly), separate wider quant scan (200 markets), related_markets cap raised to 50, quant-specific cooldown (0.5h) | 0.5 day | **DONE** |
+| Q1.8 | **Code Review + Enhancements** — 2 bugs fixed (2-outcome NegRisk arb, event limit), Kyle state-dependent slippage (`uncertainty × spread_factor`), arb execution model (`ArbOpportunity`/`ArbLeg` with profit calc), 5 design issues documented | 0.5 day | **DONE** |
+| Q2 | **Particle Filter** — Sequential Monte Carlo, stateful probability tracking, credible intervals | 1-2 days | PLANNED |
+| Q3 | **Monte Carlo Engine** — outcome simulation, variance reduction (antithetic/control/stratified) | 1-2 days | PLANNED |
+| Q4 | **Copula Portfolio Risk** — cross-position correlation, t-copula tail dependence, position sizing | 2-3 days | PLANNED |
+
+**Architecture:** Parallel trader_id="quant" with own $1000 balance. Produces Analysis objects → existing Simulator handles Kelly/slippage/risk. Future integration into main LLM pipeline planned after proving profitability.
 
 ---
 
@@ -44,8 +63,8 @@ Features for A+ grade and real-money transition.
 | 12 | **Alembic migrations** | 4-6 hrs | Replace ad-hoc ALTER TABLE with versioned, reversible migrations |
 | 13 | **Alerting & monitoring** | 4-6 hrs | Slack/email on drawdowns, daily loss, error spikes |
 | 14 | **Agentic search** | 8-12 hrs | LLM-generated search queries replacing keyword templates |
-| 15 | **Strategy interface (ABC)** | 8-12 hrs | Pure-quant strategies as first-class citizens alongside AI strategies |
-| 16 | **Monte Carlo simulation** | 4-6 hrs | Confidence intervals on backtest results, skill vs luck distinction |
+| 15 | ~~Strategy interface (ABC)~~ | — | Subsumed by Phase Q — quant agent IS the pure-quant strategy |
+| 16 | ~~Monte Carlo simulation~~ | — | Subsumed by Phase Q3 — MC engine with variance reduction |
 | 17 | **Real trade execution** | 16-24 hrs | py_clob_client wallet integration, order management, kill switch |
 
 ---
@@ -56,13 +75,13 @@ Features for A+ grade and real-money transition.
 |-----------|---------|-----------|---------------|
 | Architecture | A- | A | WebSocket integration |
 | Signal Quality | A | A | Maintained |
-| Risk Management | A- | A | Fix fee bug, alerting |
+| Risk Management | A- | A | ~~Fix fee bug~~, alerting |
 | Data Pipeline | B+ | A- | WebSocket real-time |
 | Execution | B+ | A- | WebSocket + smarter order routing |
 | Backtesting | A- | A- | Maintained |
 | Observability | B+ | A | Alerting, health checks |
 | Database | A- | A | Alembic migrations |
-| Testing | B+ | **A** | Phases T1-T5 |
+| Testing | B | **A** | T1 done, T2-T5 remaining (property-based, real DB, simulator, coverage) |
 
 **Overall A+ requires**: All dimensions A- or better, testing at A.
 
@@ -80,12 +99,14 @@ HIGH IMPACT    Fix fee bug            WebSocket feed
                Dashboard security
 
 MEDIUM IMPACT  Property tests (T2)    Real DB tests (T3)
-               Coverage CI (T5)       Strategy interface
-               Alembic migrations     Position correlation
+               Coverage CI (T5)       Position correlation
+               Alembic migrations
                Alerting
 
-LOW IMPACT     Simulator tests (T4)   Monte Carlo
-                                      Multi-platform (aspirational)
+HIGH IMPACT    Quant Agent Q1-Q2      Quant Q3-Q4
+(NEW TRACK)    (signals, arb, PF)     (MC, copula risk)
+
+LOW IMPACT     Simulator tests (T4)   Multi-platform (aspirational)
 ```
 
 ---
@@ -125,6 +146,12 @@ LOW IMPACT     Simulator tests (T4)   Monte Carlo
 - Expandable analysis cards with prob pipeline, signal badges, model votes
 - 26 new tests in test_analysis_detail.py
 
+### Correctness Sprint (DONE 2026-03-03)
+- **7 bug fixes**: fee accounting (CRITICAL), force-cycle status reset, longshot NO-side bias, EXITED bets in learning, ensemble probability inflation, thread-unsafe learning caches, rebuttal JSON parse failure
+- Replaced 3 source-inspection anti-pattern tests with behavioral tests
+- Fixed 1 vacuous assertion in test_integration.py
+- 5 new tests in test_fee_accounting.py
+
 </details>
 
 ---
@@ -134,7 +161,7 @@ LOW IMPACT     Simulator tests (T4)   Monte Carlo
 | Bug | Impact | Root Cause | Lesson |
 |-----|--------|-----------|--------|
 | NO-side slippage | 10-100x profit inflation | Returned YES bid as NO price | Need complement invariant tests |
-| Fee not in balance | ~2% profit overstatement | Fee applied to PnL not payout | Need end-to-end balance tests |
+| Fee not in balance | ~2% profit overstatement | Fee applied to PnL not payout | Need end-to-end balance tests. **FIXED 2026-03-03** |
 | make_interval float | All analyses failing | Postgres type mismatch | Need real DB integration tests |
 | Corrupt bet deletion | $235.29 discrepancy | Subtracted payouts but not costs | Need balance conservation invariant |
 

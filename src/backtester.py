@@ -294,209 +294,212 @@ def run_backtest(
     Returns a dict of trader_id -> BacktestSummary.
     """
     cli = PolymarketAPI()
-    print("=" * 60)
-    print("  POLYMARKET HISTORICAL BACKTESTER")
-    print("=" * 60)
-    print(f"\n  Range: last {days} days")
-    print(f"  Max markets: {max_markets}")
-    web_active = use_web_search and config.BRAVE_API_KEY
-    print(f"  Web search: {'ON' if web_active else 'OFF'}")
-    if web_active:
-        print("  WARNING: Web search uses CURRENT results, not historical.")
-        print("           This introduces temporal leakage — backtest results will be inflated.")
+    try:
+        print("=" * 60)
+        print("  POLYMARKET HISTORICAL BACKTESTER")
+        print("=" * 60)
+        print(f"\n  Range: last {days} days")
+        print(f"  Max markets: {max_markets}")
+        web_active = use_web_search and config.BRAVE_API_KEY
+        print(f"  Web search: {'ON' if web_active else 'OFF'}")
+        if web_active:
+            print("  WARNING: Web search uses CURRENT results, not historical.")
+            print("           This introduces temporal leakage — backtest results will be inflated.")
 
-    # 1. Fetch resolved markets
-    resolved = fetch_resolved_markets(cli, days=days, max_markets=max_markets)
-    if not resolved:
-        print("\n  No resolved markets found. Try a larger time window.")
-        return {}
+        # 1. Fetch resolved markets
+        resolved = fetch_resolved_markets(cli, days=days, max_markets=max_markets)
+        if not resolved:
+            print("\n  No resolved markets found. Try a larger time window.")
+            return {}
 
-    # 2. Get analyzers
-    analyzers = get_individual_analyzers()
-    if not analyzers:
-        print("\n  No AI analyzers available — check API keys")
-        return {}
+        # 2. Get analyzers
+        analyzers = get_individual_analyzers()
+        if not analyzers:
+            print("\n  No AI analyzers available — check API keys")
+            return {}
 
-    # 3. Build market objects with historical prices
-    test_markets: list[tuple[Market, bool, float]] = []  # (market, yes_won, historical_mid)
-    print(f"\n  Fetching historical prices for {len(resolved)} markets...")
+        # 3. Build market objects with historical prices
+        test_markets: list[tuple[Market, bool, float]] = []  # (market, yes_won, historical_mid)
+        print(f"\n  Fetching historical prices for {len(resolved)} markets...")
 
-    for raw in resolved:
-        market = Market.from_cli(raw)
-        yes_won = raw["_parsed_outcome_yes"]
+        for raw in resolved:
+            market = Market.from_cli(raw)
+            yes_won = raw["_parsed_outcome_yes"]
 
-        # Get a pre-resolution price
-        token = market.token_ids[0] if market.token_ids else ""
-        if not token:
-            continue
+            # Get a pre-resolution price
+            token = market.token_ids[0] if market.token_ids else ""
+            if not token:
+                continue
 
-        hist_mid = get_historical_midpoint(cli, token)
-        if hist_mid is None:
-            # Skip markets without historical prices to avoid lookahead bias.
-            # The previous fallback used outcome-correlated prices (0.65 for YES,
-            # 0.35 for NO), which leaked resolution info into the "historical"
-            # price and inflated backtest accuracy.
-            logger.info("Skipping %s — no historical price available", market.question[:50])
-            continue
+            hist_mid = get_historical_midpoint(cli, token)
+            if hist_mid is None:
+                # Skip markets without historical prices to avoid lookahead bias.
+                # The previous fallback used outcome-correlated prices (0.65 for YES,
+                # 0.35 for NO), which leaked resolution info into the "historical"
+                # price and inflated backtest accuracy.
+                logger.info("Skipping %s — no historical price available", market.question[:50])
+                continue
 
-        market.midpoint = hist_mid
-        market.active = True  # Pretend it's still active for the analyzer
-        test_markets.append((market, yes_won, hist_mid))
+            market.midpoint = hist_mid
+            market.active = True  # Pretend it's still active for the analyzer
+            test_markets.append((market, yes_won, hist_mid))
 
-    print(f"  Prepared {len(test_markets)} markets for backtesting")
+        print(f"  Prepared {len(test_markets)} markets for backtesting")
 
-    # 4. Run each analyzer on each market
-    db.init_db()
-    run_id = uuid.uuid4().hex[:12]
-    db.save_backtest_run(run_id, days, len(test_markets))
-    summaries: dict[str, BacktestSummary] = {}
-    bankroll = config.SIM_STARTING_BALANCE
+        # 4. Run each analyzer on each market
+        db.init_db()
+        run_id = uuid.uuid4().hex[:12]
+        db.save_backtest_run(run_id, days, len(test_markets))
+        summaries: dict[str, BacktestSummary] = {}
+        bankroll = config.SIM_STARTING_BALANCE
 
-    for analyzer in analyzers:
-        tid = analyzer.TRADER_ID
-        summary = BacktestSummary(trader_id=tid)
-        print(f"\n  --- {tid.upper()} ---")
+        for analyzer in analyzers:
+            tid = analyzer.TRADER_ID
+            summary = BacktestSummary(trader_id=tid)
+            print(f"\n  --- {tid.upper()} ---")
 
-        for market, yes_won, hist_mid in test_markets:
-            summary.total_markets += 1
-            try:
-                # Optionally enrich with web search
-                web_ctx = ""
-                if use_web_search:
-                    web_ctx = _build_web_context(market)
+            for market, yes_won, hist_mid in test_markets:
+                summary.total_markets += 1
+                try:
+                    # Optionally enrich with web search
+                    web_ctx = ""
+                    if use_web_search:
+                        web_ctx = _build_web_context(market)
 
-                analysis = analyzer.analyze(market, web_ctx)
+                    analysis = analyzer.analyze(market, web_ctx)
 
-                # Brier score: (estimated_prob - actual_outcome)^2
-                actual = 1.0 if yes_won else 0.0
-                brier = (analysis.estimated_probability - actual) ** 2
-                summary.brier_score_sum += brier
-                summary.brier_count += 1
+                    # Brier score: (estimated_prob - actual_outcome)^2
+                    actual = 1.0 if yes_won else 0.0
+                    brier = (analysis.estimated_probability - actual) ** 2
+                    summary.brier_score_sum += brier
+                    summary.brier_count += 1
 
-                if analysis.recommendation == Recommendation.SKIP:
-                    summary.skips += 1
-                    icon = " "
-                else:
-                    summary.predictions_made += 1
-
-                    # Was the prediction correct?
-                    assumed_spread = config.BACKTEST_ASSUMED_SPREAD
-                    if analysis.recommendation == Recommendation.BUY_YES:
-                        was_correct = yes_won
-                        side = Side.YES
+                    if analysis.recommendation == Recommendation.SKIP:
+                        summary.skips += 1
+                        icon = " "
                     else:
-                        was_correct = not yes_won
-                        side = Side.NO
+                        summary.predictions_made += 1
 
-                    from src.slippage import apply_slippage
-                    entry_price, _ = apply_slippage(
-                        midpoint=hist_mid,
-                        spread=assumed_spread,
-                        side=side.value,
-                        amount=0,  # No book in backtest
-                        order_book=None,
-                    )
+                        # Was the prediction correct?
+                        assumed_spread = config.BACKTEST_ASSUMED_SPREAD
+                        if analysis.recommendation == Recommendation.BUY_YES:
+                            was_correct = yes_won
+                            side = Side.YES
+                        else:
+                            was_correct = not yes_won
+                            side = Side.NO
 
-                    if was_correct:
-                        summary.correct += 1
-                        icon = "+"
-                    else:
-                        summary.incorrect += 1
-                        icon = "x"
+                        from src.slippage import apply_slippage
+                        entry_price, _ = apply_slippage(
+                            midpoint=hist_mid,
+                            spread=assumed_spread,
+                            side=side.value,
+                            amount=0,  # No book in backtest
+                            order_book=None,
+                        )
 
-                    # Theoretical Kelly P&L (spread-adjusted)
-                    from src.models import kelly_size
-                    bet_amount = kelly_size(
-                        estimated_prob=analysis.estimated_probability,
-                        market_price=hist_mid,
-                        side=side,
-                        bankroll=bankroll,
-                        max_bet_pct=config.SIM_MAX_BET_PCT,
-                        fraction=config.SIM_KELLY_FRACTION,
-                        spread=assumed_spread,
-                    )
-                    if bet_amount >= 1.0:
-                        shares = bet_amount / entry_price
-                        payout = shares * 1.0 if was_correct else 0.0
-                        pnl = payout - bet_amount
-                        # Apply Polymarket fee on profits
-                        if pnl > 0:
-                            pnl -= pnl * config.BACKTEST_FEE_RATE
-                    else:
-                        pnl = 0.0
+                        if was_correct:
+                            summary.correct += 1
+                            icon = "+"
+                        else:
+                            summary.incorrect += 1
+                            icon = "x"
 
-                    summary.total_theoretical_pnl += pnl
+                        # Theoretical Kelly P&L (spread-adjusted)
+                        from src.models import kelly_size
+                        bet_amount = kelly_size(
+                            estimated_prob=analysis.estimated_probability,
+                            market_price=hist_mid,
+                            side=side,
+                            bankroll=bankroll,
+                            max_bet_pct=config.SIM_MAX_BET_PCT,
+                            fraction=config.SIM_KELLY_FRACTION,
+                            spread=assumed_spread,
+                        )
+                        if bet_amount >= 1.0:
+                            shares = bet_amount / entry_price
+                            payout = shares * 1.0 if was_correct else 0.0
+                            pnl = payout - bet_amount
+                            # Apply Polymarket fee on profits
+                            if pnl > 0:
+                                pnl -= pnl * config.BACKTEST_FEE_RATE
+                        else:
+                            pnl = 0.0
 
-                    result = BacktestResult(
-                        market_id=market.id,
-                        market_question=market.question,
-                        trader_id=tid,
-                        model=analysis.model,
-                        recommendation=analysis.recommendation.value,
-                        estimated_probability=analysis.estimated_probability,
-                        confidence=analysis.confidence,
-                        reasoning=analysis.reasoning[:200],
-                        actual_outcome_yes=yes_won,
-                        market_price_at_analysis=hist_mid,
-                        was_correct=was_correct,
-                        theoretical_pnl=pnl,
-                    )
-                    summary.results.append(result)
+                        summary.total_theoretical_pnl += pnl
 
-                    db.save_backtest_result(
-                        run_id=run_id, trader_id=tid, market_id=market.id,
-                        market_question=market.question, model=analysis.model,
-                        recommendation=analysis.recommendation.value,
-                        estimated_probability=analysis.estimated_probability,
-                        confidence=analysis.confidence,
-                        actual_outcome_yes=yes_won, market_price=hist_mid,
-                        was_correct=was_correct, theoretical_pnl=pnl,
-                        reasoning=analysis.reasoning[:500],
-                    )
+                        result = BacktestResult(
+                            market_id=market.id,
+                            market_question=market.question,
+                            trader_id=tid,
+                            model=analysis.model,
+                            recommendation=analysis.recommendation.value,
+                            estimated_probability=analysis.estimated_probability,
+                            confidence=analysis.confidence,
+                            reasoning=analysis.reasoning[:200],
+                            actual_outcome_yes=yes_won,
+                            market_price_at_analysis=hist_mid,
+                            was_correct=was_correct,
+                            theoretical_pnl=pnl,
+                        )
+                        summary.results.append(result)
 
-                    print(f"  [{icon}] {analysis.recommendation.value:>7} "
-                          f"(est:{analysis.estimated_probability:.0%} vs actual:{'YES' if yes_won else 'NO'}) "
-                          f"${pnl:+.2f} — {market.question[:45]}")
+                        db.save_backtest_result(
+                            run_id=run_id, trader_id=tid, market_id=market.id,
+                            market_question=market.question, model=analysis.model,
+                            recommendation=analysis.recommendation.value,
+                            estimated_probability=analysis.estimated_probability,
+                            confidence=analysis.confidence,
+                            actual_outcome_yes=yes_won, market_price=hist_mid,
+                            was_correct=was_correct, theoretical_pnl=pnl,
+                            reasoning=analysis.reasoning[:500],
+                        )
 
-            except Exception as e:
-                logger.warning("[%s] Error on %s: %s", tid, market.question[:40], e)
+                        print(f"  [{icon}] {analysis.recommendation.value:>7} "
+                              f"(est:{analysis.estimated_probability:.0%} vs actual:{'YES' if yes_won else 'NO'}) "
+                              f"${pnl:+.2f} — {market.question[:45]}")
 
-        summaries[tid] = summary
-        print(f"\n  {tid}: {summary.correct}/{summary.predictions_made} correct "
-              f"({summary.accuracy:.0%}), Brier: {summary.brier_score:.4f}, "
-              f"P&L: ${summary.total_theoretical_pnl:+.2f}")
+                except Exception as e:
+                    logger.warning("[%s] Error on %s: %s", tid, market.question[:40], e)
 
-    # 5. Print comparison
-    print("\n" + "=" * 60)
-    print("  BACKTEST RESULTS")
-    print("  " + "-" * 56)
-    print(f"  {'Model':<12} {'Accuracy':>10} {'Brier':>8} {'P&L':>10} {'Bets':>6} {'Skips':>6}")
-    print("  " + "-" * 56)
-    for tid, s in sorted(summaries.items(), key=lambda x: x[1].total_theoretical_pnl, reverse=True):
-        print(f"  {tid:<12} {s.accuracy:>9.0%} {s.brier_score:>8.4f} "
-              f"${s.total_theoretical_pnl:>+9.2f} {s.predictions_made:>6} {s.skips:>6}")
-    print("  " + "-" * 56)
-    print(f"\n  Brier score: 0.0 = perfect, 0.25 = random coin flip")
-    print(f"  Markets tested: {len(test_markets)}")
+            summaries[tid] = summary
+            print(f"\n  {tid}: {summary.correct}/{summary.predictions_made} correct "
+                  f"({summary.accuracy:.0%}), Brier: {summary.brier_score:.4f}, "
+                  f"P&L: ${summary.total_theoretical_pnl:+.2f}")
 
-    # 6. Compute risk-adjusted metrics per model
-    print("\n  " + "-" * 56)
-    print(f"  {'Model':<12} {'Sharpe':>8} {'Sortino':>8} {'MaxDD':>8} {'Calmar':>8} {'PF':>8}")
-    print("  " + "-" * 56)
-    for tid, s in sorted(summaries.items(), key=lambda x: x[1].total_theoretical_pnl, reverse=True):
-        pnl_series = [r.theoretical_pnl for r in s.results if r.theoretical_pnl != 0.0]
-        rm = compute_risk_metrics(pnl_series, trading_days=days)
-        s.risk_metrics = rm
-        pf_str = f"{rm.profit_factor:>8.2f}" if rm.profit_factor != float("inf") else "     inf"
-        print(f"  {tid:<12} {rm.sharpe_ratio:>8.2f} {rm.sortino_ratio:>8.2f} "
-              f"${rm.max_drawdown:>7.2f} {rm.calmar_ratio:>8.2f} {pf_str}")
-    print("  " + "-" * 56)
-    print(f"  Sharpe/Sortino: >1 good, >2 great | PF: >1.5 profitable")
+        # 5. Print comparison
+        print("\n" + "=" * 60)
+        print("  BACKTEST RESULTS")
+        print("  " + "-" * 56)
+        print(f"  {'Model':<12} {'Accuracy':>10} {'Brier':>8} {'P&L':>10} {'Bets':>6} {'Skips':>6}")
+        print("  " + "-" * 56)
+        for tid, s in sorted(summaries.items(), key=lambda x: x[1].total_theoretical_pnl, reverse=True):
+            print(f"  {tid:<12} {s.accuracy:>9.0%} {s.brier_score:>8.4f} "
+                  f"${s.total_theoretical_pnl:>+9.2f} {s.predictions_made:>6} {s.skips:>6}")
+        print("  " + "-" * 56)
+        print(f"\n  Brier score: 0.0 = perfect, 0.25 = random coin flip")
+        print(f"  Markets tested: {len(test_markets)}")
 
-    # 7. Compute calibration curves from results
-    compute_calibration(summaries)
+        # 6. Compute risk-adjusted metrics per model
+        print("\n  " + "-" * 56)
+        print(f"  {'Model':<12} {'Sharpe':>8} {'Sortino':>8} {'MaxDD':>8} {'Calmar':>8} {'PF':>8}")
+        print("  " + "-" * 56)
+        for tid, s in sorted(summaries.items(), key=lambda x: x[1].total_theoretical_pnl, reverse=True):
+            pnl_series = [r.theoretical_pnl for r in s.results if r.theoretical_pnl != 0.0]
+            rm = compute_risk_metrics(pnl_series, trading_days=days)
+            s.risk_metrics = rm
+            pf_str = f"{rm.profit_factor:>8.2f}" if rm.profit_factor != float("inf") else "     inf"
+            print(f"  {tid:<12} {rm.sharpe_ratio:>8.2f} {rm.sortino_ratio:>8.2f} "
+                  f"${rm.max_drawdown:>7.2f} {rm.calmar_ratio:>8.2f} {pf_str}")
+        print("  " + "-" * 56)
+        print(f"  Sharpe/Sortino: >1 good, >2 great | PF: >1.5 profitable")
 
-    return summaries
+        # 7. Compute calibration curves from results
+        compute_calibration(summaries)
+
+        return summaries
+    finally:
+        cli.close()
 
 
 CALIBRATION_BUCKETS = [
@@ -598,215 +601,218 @@ def walk_forward(
         step_days = config.BACKTEST_STEP_DAYS
 
     cli = PolymarketAPI()
-    print("=" * 60)
-    print("  WALK-FORWARD BACKTESTER")
-    print("=" * 60)
-    print(f"\n  Total range: {days} days")
-    print(f"  Window size: {window_days} days, step: {step_days} days")
-    print(f"  Max markets: {max_markets}")
+    try:
+        print("=" * 60)
+        print("  WALK-FORWARD BACKTESTER")
+        print("=" * 60)
+        print(f"\n  Total range: {days} days")
+        print(f"  Window size: {window_days} days, step: {step_days} days")
+        print(f"  Max markets: {max_markets}")
 
-    # Fetch all resolved markets for the full range
-    resolved = fetch_resolved_markets(cli, days=days, max_markets=max_markets)
-    if not resolved:
-        print("\n  No resolved markets found.")
-        return {}
+        # Fetch all resolved markets for the full range
+        resolved = fetch_resolved_markets(cli, days=days, max_markets=max_markets)
+        if not resolved:
+            print("\n  No resolved markets found.")
+            return {}
 
-    # Build market objects with historical prices and resolution dates
-    all_markets: list[tuple[Market, bool, float, datetime]] = []
-    for raw in resolved:
-        market = Market.from_cli(raw)
-        yes_won = raw["_parsed_outcome_yes"]
-        token = market.token_ids[0] if market.token_ids else ""
-        if not token:
-            continue
-        hist_mid = get_historical_midpoint(cli, token)
-        if hist_mid is None:
-            continue
+        # Build market objects with historical prices and resolution dates
+        all_markets: list[tuple[Market, bool, float, datetime]] = []
+        for raw in resolved:
+            market = Market.from_cli(raw)
+            yes_won = raw["_parsed_outcome_yes"]
+            token = market.token_ids[0] if market.token_ids else ""
+            if not token:
+                continue
+            hist_mid = get_historical_midpoint(cli, token)
+            if hist_mid is None:
+                continue
 
-        # Parse end date for windowing
-        end_date_str = raw.get("endDate")
-        if not end_date_str:
-            continue
-        try:
-            end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
-        except (ValueError, TypeError):
-            continue
+            # Parse end date for windowing
+            end_date_str = raw.get("endDate")
+            if not end_date_str:
+                continue
+            try:
+                end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                continue
 
-        market.midpoint = hist_mid
-        market.active = True
-        all_markets.append((market, yes_won, hist_mid, end_dt))
+            market.midpoint = hist_mid
+            market.active = True
+            all_markets.append((market, yes_won, hist_mid, end_dt))
 
-    if not all_markets:
-        print("\n  No markets with valid dates and prices.")
-        return {}
+        if not all_markets:
+            print("\n  No markets with valid dates and prices.")
+            return {}
 
-    # Sort by end date
-    all_markets.sort(key=lambda x: x[3])
-    earliest = all_markets[0][3]
-    latest = all_markets[-1][3]
-    total_span = (latest - earliest).days
+        # Sort by end date
+        all_markets.sort(key=lambda x: x[3])
+        earliest = all_markets[0][3]
+        latest = all_markets[-1][3]
+        total_span = (latest - earliest).days
 
-    print(f"  Markets with dates: {len(all_markets)} (span: {total_span} days)")
+        print(f"  Markets with dates: {len(all_markets)} (span: {total_span} days)")
 
-    # Get analyzers
-    analyzers = get_individual_analyzers()
-    if not analyzers:
-        print("\n  No AI analyzers available")
-        return {}
+        # Get analyzers
+        analyzers = get_individual_analyzers()
+        if not analyzers:
+            print("\n  No AI analyzers available")
+            return {}
 
-    db.init_db()
-    results: dict[str, WalkForwardResult] = {}
-    for analyzer in analyzers:
-        results[analyzer.TRADER_ID] = WalkForwardResult(trader_id=analyzer.TRADER_ID)
-
-    # Generate windows
-    windows = []
-    offset = window_days  # First window needs in-sample data
-    while offset <= total_span:
-        window_start = offset - window_days
-        window_end = offset
-        windows.append((window_start, window_end))
-        offset += step_days
-
-    if not windows:
-        # Single window covering all data
-        windows = [(0, total_span)]
-
-    print(f"  Windows: {len(windows)}")
-
-    for win_start, win_end in windows:
-        cutoff_start = earliest + timedelta(days=win_start)
-        cutoff_end = earliest + timedelta(days=win_end)
-
-        # Split into in-sample (before window) and out-of-sample (within window)
-        in_sample = [(m, y, h) for m, y, h, d in all_markets if d < cutoff_start]
-        oos = [(m, y, h) for m, y, h, d in all_markets if cutoff_start <= d <= cutoff_end]
-
-        if not oos:
-            continue
-
-        print(f"\n  --- Window: day {win_start}-{win_end} (IS: {len(in_sample)}, OOS: {len(oos)}) ---")
-
+        db.init_db()
+        results: dict[str, WalkForwardResult] = {}
         for analyzer in analyzers:
-            tid = analyzer.TRADER_ID
-            wf = results[tid]
-            correct = 0
-            predictions = 0
-            brier_sum = 0.0
-            brier_n = 0
-            pnl_series = []
-            bankroll = config.SIM_STARTING_BALANCE
+            results[analyzer.TRADER_ID] = WalkForwardResult(trader_id=analyzer.TRADER_ID)
 
-            # Update bankroll from prior windows
+        # Generate windows
+        windows = []
+        offset = window_days  # First window needs in-sample data
+        while offset <= total_span:
+            window_start = offset - window_days
+            window_end = offset
+            windows.append((window_start, window_end))
+            offset += step_days
+
+        if not windows:
+            # Single window covering all data
+            windows = [(0, total_span)]
+
+        print(f"  Windows: {len(windows)}")
+
+        for win_start, win_end in windows:
+            cutoff_start = earliest + timedelta(days=win_start)
+            cutoff_end = earliest + timedelta(days=win_end)
+
+            # Split into in-sample (before window) and out-of-sample (within window)
+            in_sample = [(m, y, h) for m, y, h, d in all_markets if d < cutoff_start]
+            oos = [(m, y, h) for m, y, h, d in all_markets if cutoff_start <= d <= cutoff_end]
+
+            if not oos:
+                continue
+
+            print(f"\n  --- Window: day {win_start}-{win_end} (IS: {len(in_sample)}, OOS: {len(oos)}) ---")
+
+            for analyzer in analyzers:
+                tid = analyzer.TRADER_ID
+                wf = results[tid]
+                correct = 0
+                predictions = 0
+                brier_sum = 0.0
+                brier_n = 0
+                pnl_series = []
+                bankroll = config.SIM_STARTING_BALANCE
+
+                # Update bankroll from prior windows
+                for w in wf.windows:
+                    bankroll += w.out_of_sample_pnl
+
+                for market, yes_won, hist_mid in oos:
+                    try:
+                        analysis = analyzer.analyze(market, "")
+
+                        actual = 1.0 if yes_won else 0.0
+                        brier = (analysis.estimated_probability - actual) ** 2
+                        brier_sum += brier
+                        brier_n += 1
+
+                        if analysis.recommendation == Recommendation.SKIP:
+                            continue
+
+                        predictions += 1
+                        assumed_spread = config.BACKTEST_ASSUMED_SPREAD
+
+                        if analysis.recommendation == Recommendation.BUY_YES:
+                            was_correct = yes_won
+                            side = Side.YES
+                        else:
+                            was_correct = not yes_won
+                            side = Side.NO
+
+                        if was_correct:
+                            correct += 1
+
+                        from src.slippage import apply_slippage
+                        entry_price, _ = apply_slippage(
+                            midpoint=hist_mid, spread=assumed_spread,
+                            side=side.value, amount=0, order_book=None,
+                        )
+
+                        from src.models import kelly_size
+                        bet_amount = kelly_size(
+                            estimated_prob=analysis.estimated_probability,
+                            market_price=hist_mid, side=side,
+                            bankroll=max(bankroll, 1.0),
+                            max_bet_pct=config.SIM_MAX_BET_PCT,
+                            fraction=config.SIM_KELLY_FRACTION,
+                            spread=assumed_spread,
+                        )
+                        if bet_amount >= 1.0:
+                            shares = bet_amount / entry_price
+                            payout = shares * 1.0 if was_correct else 0.0
+                            pnl = payout - bet_amount
+                            if pnl > 0:
+                                pnl -= pnl * config.BACKTEST_FEE_RATE
+                            pnl_series.append(pnl)
+                            bankroll += pnl
+                        else:
+                            pnl_series.append(0.0)
+                    except Exception as e:
+                        logger.warning("[%s] Walk-forward error: %s", tid, e)
+
+                window_pnl = sum(pnl_series)
+                window_acc = correct / predictions if predictions > 0 else 0.0
+                window_brier = brier_sum / brier_n if brier_n > 0 else 1.0
+                rm = compute_risk_metrics(pnl_series, trading_days=max(win_end - win_start, 1))
+
+                window = WalkForwardWindow(
+                    window_start=win_start, window_end=win_end,
+                    in_sample_markets=len(in_sample), out_of_sample_markets=len(oos),
+                    out_of_sample_accuracy=window_acc, out_of_sample_brier=window_brier,
+                    out_of_sample_pnl=window_pnl, risk_metrics=rm,
+                )
+                wf.windows.append(window)
+                wf.total_windows += 1
+                wf.total_oos_markets += len(oos)
+                wf.total_oos_predictions += predictions
+                wf.total_oos_correct += correct
+                wf.total_oos_pnl += window_pnl
+                wf.total_brier_sum += brier_sum
+                wf.total_brier_count += brier_n
+
+                print(f"    {tid}: {correct}/{predictions} correct ({window_acc:.0%}), "
+                      f"Brier: {window_brier:.4f}, PnL: ${window_pnl:+.2f}")
+
+        # Print aggregate results
+        print("\n" + "=" * 60)
+        print("  WALK-FORWARD RESULTS (OUT-OF-SAMPLE)")
+        print("  " + "-" * 56)
+        print(f"  {'Model':<12} {'Accuracy':>10} {'Brier':>8} {'PnL':>10} {'Windows':>8} {'Preds':>6}")
+        print("  " + "-" * 56)
+
+        for tid, wf in sorted(results.items(), key=lambda x: x[1].total_oos_pnl, reverse=True):
+            # Compute aggregate risk metrics from all OOS PnL
+            all_pnl = []
             for w in wf.windows:
-                bankroll += w.out_of_sample_pnl
+                if w.risk_metrics and w.risk_metrics.num_trades > 0:
+                    all_pnl.extend([w.out_of_sample_pnl / max(w.risk_metrics.num_trades, 1)] * w.risk_metrics.num_trades)
+            wf.aggregate_risk = compute_risk_metrics(all_pnl, trading_days=days)
 
-            for market, yes_won, hist_mid in oos:
-                try:
-                    analysis = analyzer.analyze(market, "")
+            print(f"  {tid:<12} {wf.oos_accuracy:>9.0%} {wf.oos_brier:>8.4f} "
+                  f"${wf.total_oos_pnl:>+9.2f} {wf.total_windows:>8} {wf.total_oos_predictions:>6}")
+        print("  " + "-" * 56)
 
-                    actual = 1.0 if yes_won else 0.0
-                    brier = (analysis.estimated_probability - actual) ** 2
-                    brier_sum += brier
-                    brier_n += 1
+        # Risk metrics table
+        print(f"\n  {'Model':<12} {'Sharpe':>8} {'Sortino':>8} {'MaxDD':>8} {'Calmar':>8}")
+        print("  " + "-" * 56)
+        for tid, wf in sorted(results.items(), key=lambda x: x[1].total_oos_pnl, reverse=True):
+            rm = wf.aggregate_risk or RiskMetrics()
+            print(f"  {tid:<12} {rm.sharpe_ratio:>8.2f} {rm.sortino_ratio:>8.2f} "
+                  f"${rm.max_drawdown:>7.2f} {rm.calmar_ratio:>8.2f}")
+        print("  " + "-" * 56)
+        print(f"  Note: All metrics computed on out-of-sample data only")
 
-                    if analysis.recommendation == Recommendation.SKIP:
-                        continue
-
-                    predictions += 1
-                    assumed_spread = config.BACKTEST_ASSUMED_SPREAD
-
-                    if analysis.recommendation == Recommendation.BUY_YES:
-                        was_correct = yes_won
-                        side = Side.YES
-                    else:
-                        was_correct = not yes_won
-                        side = Side.NO
-
-                    if was_correct:
-                        correct += 1
-
-                    from src.slippage import apply_slippage
-                    entry_price, _ = apply_slippage(
-                        midpoint=hist_mid, spread=assumed_spread,
-                        side=side.value, amount=0, order_book=None,
-                    )
-
-                    from src.models import kelly_size
-                    bet_amount = kelly_size(
-                        estimated_prob=analysis.estimated_probability,
-                        market_price=hist_mid, side=side,
-                        bankroll=max(bankroll, 1.0),
-                        max_bet_pct=config.SIM_MAX_BET_PCT,
-                        fraction=config.SIM_KELLY_FRACTION,
-                        spread=assumed_spread,
-                    )
-                    if bet_amount >= 1.0:
-                        shares = bet_amount / entry_price
-                        payout = shares * 1.0 if was_correct else 0.0
-                        pnl = payout - bet_amount
-                        if pnl > 0:
-                            pnl -= pnl * config.BACKTEST_FEE_RATE
-                        pnl_series.append(pnl)
-                        bankroll += pnl
-                    else:
-                        pnl_series.append(0.0)
-                except Exception as e:
-                    logger.warning("[%s] Walk-forward error: %s", tid, e)
-
-            window_pnl = sum(pnl_series)
-            window_acc = correct / predictions if predictions > 0 else 0.0
-            window_brier = brier_sum / brier_n if brier_n > 0 else 1.0
-            rm = compute_risk_metrics(pnl_series, trading_days=max(win_end - win_start, 1))
-
-            window = WalkForwardWindow(
-                window_start=win_start, window_end=win_end,
-                in_sample_markets=len(in_sample), out_of_sample_markets=len(oos),
-                out_of_sample_accuracy=window_acc, out_of_sample_brier=window_brier,
-                out_of_sample_pnl=window_pnl, risk_metrics=rm,
-            )
-            wf.windows.append(window)
-            wf.total_windows += 1
-            wf.total_oos_markets += len(oos)
-            wf.total_oos_predictions += predictions
-            wf.total_oos_correct += correct
-            wf.total_oos_pnl += window_pnl
-            wf.total_brier_sum += brier_sum
-            wf.total_brier_count += brier_n
-
-            print(f"    {tid}: {correct}/{predictions} correct ({window_acc:.0%}), "
-                  f"Brier: {window_brier:.4f}, PnL: ${window_pnl:+.2f}")
-
-    # Print aggregate results
-    print("\n" + "=" * 60)
-    print("  WALK-FORWARD RESULTS (OUT-OF-SAMPLE)")
-    print("  " + "-" * 56)
-    print(f"  {'Model':<12} {'Accuracy':>10} {'Brier':>8} {'PnL':>10} {'Windows':>8} {'Preds':>6}")
-    print("  " + "-" * 56)
-
-    for tid, wf in sorted(results.items(), key=lambda x: x[1].total_oos_pnl, reverse=True):
-        # Compute aggregate risk metrics from all OOS PnL
-        all_pnl = []
-        for w in wf.windows:
-            if w.risk_metrics and w.risk_metrics.num_trades > 0:
-                all_pnl.extend([w.out_of_sample_pnl / max(w.risk_metrics.num_trades, 1)] * w.risk_metrics.num_trades)
-        wf.aggregate_risk = compute_risk_metrics(all_pnl, trading_days=days)
-
-        print(f"  {tid:<12} {wf.oos_accuracy:>9.0%} {wf.oos_brier:>8.4f} "
-              f"${wf.total_oos_pnl:>+9.2f} {wf.total_windows:>8} {wf.total_oos_predictions:>6}")
-    print("  " + "-" * 56)
-
-    # Risk metrics table
-    print(f"\n  {'Model':<12} {'Sharpe':>8} {'Sortino':>8} {'MaxDD':>8} {'Calmar':>8}")
-    print("  " + "-" * 56)
-    for tid, wf in sorted(results.items(), key=lambda x: x[1].total_oos_pnl, reverse=True):
-        rm = wf.aggregate_risk or RiskMetrics()
-        print(f"  {tid:<12} {rm.sharpe_ratio:>8.2f} {rm.sortino_ratio:>8.2f} "
-              f"${rm.max_drawdown:>7.2f} {rm.calmar_ratio:>8.2f}")
-    print("  " + "-" * 56)
-    print(f"  Note: All metrics computed on out-of-sample data only")
-
-    return results
+        return results
+    finally:
+        cli.close()
 
 
 def main():

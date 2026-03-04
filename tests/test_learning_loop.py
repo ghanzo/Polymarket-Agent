@@ -367,6 +367,7 @@ class TestStalePosition:
     def test_stale_position_closed(self, mock_config, mock_db):
         from src.simulator import Simulator
 
+        mock_config.SIM_MIN_HOLD_SECONDS = 300
         mock_config.SIM_MAX_POSITION_DAYS = 14
         mock_config.SIM_STALE_THRESHOLD = 0.05
         mock_config.SIM_STOP_LOSS = 0.25
@@ -403,6 +404,7 @@ class TestStalePosition:
     def test_stale_position_kept_if_moved(self, mock_config, mock_db):
         from src.simulator import Simulator
 
+        mock_config.SIM_MIN_HOLD_SECONDS = 300
         mock_config.SIM_MAX_POSITION_DAYS = 14
         mock_config.SIM_STALE_THRESHOLD = 0.05
         mock_config.SIM_STOP_LOSS = 0.25
