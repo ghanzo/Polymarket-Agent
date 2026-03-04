@@ -178,6 +178,11 @@ class Config:
     QUANT_MAX_MARKETS_PER_EVENT: int = int(os.getenv("QUANT_MAX_MARKETS_PER_EVENT", "20"))
     QUANT_MAX_RELATED_MARKETS: int = int(os.getenv("QUANT_MAX_RELATED_MARKETS", "50"))
 
+    # Hybrid LLM+Quant — quant signals validate/adjust ensemble recommendations
+    USE_HYBRID_QUANT: bool = os.getenv("USE_HYBRID_QUANT", "true").lower() == "true"
+    HYBRID_AGREEMENT_BOOST: float = float(os.getenv("HYBRID_AGREEMENT_BOOST", "0.10"))
+    HYBRID_DISAGREEMENT_PENALTY: float = float(os.getenv("HYBRID_DISAGREEMENT_PENALTY", "0.15"))
+
     # AI Budget (daily caps in USD)
     AI_BUDGET_SOFT_CAP: float = float(os.getenv("AI_BUDGET_SOFT_CAP", "10.0"))
     AI_BUDGET_HARD_CAP: float = float(os.getenv("AI_BUDGET_HARD_CAP", "15.0"))

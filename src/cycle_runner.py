@@ -267,6 +267,12 @@ def _run_ensemble(analyzers, markets, all_analyses, web_contexts, paused, result
         for market, analysis in analyses:
             market_results.setdefault(market.id, []).append(analysis)
 
+    # Build quant analysis lookup for hybrid validation
+    quant_by_market: dict[str, Analysis] = {}
+    if config.USE_HYBRID_QUANT and "quant" in all_analyses:
+        for mkt, qa in all_analyses["quant"]:
+            quant_by_market[mkt.id] = qa
+
     for market in markets:
         status_cb("ensemble", "analyzing", current_market=market.question[:50])
         try:
@@ -277,6 +283,11 @@ def _run_ensemble(analyzers, markets, all_analyses, web_contexts, paused, result
                 analysis = ensemble.debate(market, cached, web_contexts.get(market.id, ""))
             else:
                 analysis = ensemble.aggregate(market, cached)
+
+            # Hybrid quant validation: adjust ensemble confidence based on quant agreement
+            if quant_by_market and analysis.recommendation != Recommendation.SKIP:
+                analysis = _apply_hybrid_quant(analysis, quant_by_market.get(market.id))
+
             all_analyses["ensemble"].append((market, analysis))
             db.save_analysis(
                 "ensemble", market.id, analysis.model,
@@ -292,6 +303,56 @@ def _run_ensemble(analyzers, markets, all_analyses, web_contexts, paused, result
     status_cb("ensemble", "idle")
 
     return all_analyses
+
+
+def _apply_hybrid_quant(ensemble_analysis: Analysis, quant_analysis: Analysis | None) -> Analysis:
+    """Validate ensemble recommendation against quant signals.
+
+    If quant and ensemble agree on direction → boost confidence.
+    If they disagree → penalize confidence.
+    Records validation result in extras for transparency.
+    """
+    if quant_analysis is None or quant_analysis.recommendation == Recommendation.SKIP:
+        # No quant opinion — pass through unchanged
+        extras = dict(ensemble_analysis.extras) if ensemble_analysis.extras else {}
+        extras["hybrid_quant"] = "no_quant_data"
+        ensemble_analysis.extras = extras
+        return ensemble_analysis
+
+    extras = dict(ensemble_analysis.extras) if ensemble_analysis.extras else {}
+
+    # Determine agreement: same direction = agree, opposite = disagree
+    e_rec = ensemble_analysis.recommendation
+    q_rec = quant_analysis.recommendation
+    agree = (e_rec == q_rec)
+
+    # Extract quant signal summary for transparency
+    q_signals = quant_analysis.extras.get("signals", []) if quant_analysis.extras else []
+    extras["hybrid_quant"] = {
+        "quant_rec": q_rec.value,
+        "quant_confidence": round(quant_analysis.confidence, 3),
+        "quant_est_prob": round(quant_analysis.estimated_probability, 4),
+        "quant_signal_count": len(q_signals),
+        "agreement": agree,
+    }
+
+    if agree:
+        boost = config.HYBRID_AGREEMENT_BOOST
+        new_conf = min(0.95, ensemble_analysis.confidence + boost)
+        extras["hybrid_quant"]["adjustment"] = round(boost, 3)
+        logger.info("[hybrid] Quant AGREES with ensemble on %s → confidence %.2f → %.2f",
+                    ensemble_analysis.market_id[:20], ensemble_analysis.confidence, new_conf)
+        ensemble_analysis.confidence = new_conf
+    else:
+        penalty = config.HYBRID_DISAGREEMENT_PENALTY
+        new_conf = max(0.0, ensemble_analysis.confidence - penalty)
+        extras["hybrid_quant"]["adjustment"] = round(-penalty, 3)
+        logger.info("[hybrid] Quant DISAGREES with ensemble on %s → confidence %.2f → %.2f",
+                    ensemble_analysis.market_id[:20], ensemble_analysis.confidence, new_conf)
+        ensemble_analysis.confidence = new_conf
+
+    ensemble_analysis.extras = extras
+    return ensemble_analysis
 
 
 def _place_bets_and_review(cli, all_analyses, result, cycle_number, status_cb):

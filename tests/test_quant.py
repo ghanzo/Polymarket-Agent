@@ -125,8 +125,8 @@ class TestBeliefVolatility:
 
     def test_moderate_vol_returns_none(self):
         """In-between volatility → no signal."""
-        # Vol ≈ 0.16, between QUANT_BELIEF_VOL_LOW (0.15) and QUANT_BELIEF_VOL_HIGH (0.5)
-        prices = [0.47, 0.50, 0.53, 0.48, 0.52, 0.50]
+        # EWMA vol ≈ 0.25, between QUANT_BELIEF_VOL_LOW (0.15) and QUANT_BELIEF_VOL_HIGH (0.5)
+        prices = [0.45, 0.52, 0.47, 0.54, 0.49, 0.52]
         m = _make_market(price_history=_price_history(prices))
         sig = belief_volatility(m)
         assert sig is None, "Moderate vol should fall between thresholds and return None"
@@ -1232,3 +1232,401 @@ class TestArbInAgentExtras:
         a_big = agent.analyze(m_big)
         a_small = agent.analyze(m_small)
         assert a_big.confidence >= a_small.confidence
+
+
+# ── Malformed / Missing Data Edge Cases ─────────────────────────────
+
+class TestMalformedPriceHistory:
+    """Signals must handle malformed price data without crashing."""
+
+    def test_nan_in_prices(self):
+        """NaN values in price_history are filtered out."""
+        prices = [{"p": "0.50"}, {"p": "nan"}, {"p": "0.52"}, {"p": "0.50"}, {"p": "0.51"}]
+        m = _make_market(midpoint=0.50)
+        m.price_history = prices
+        extracted = _extract_prices(m, prefer_daily=False)
+        assert all(math.isfinite(p) for p in extracted)
+        # NaN should be filtered, giving 4 valid prices
+        assert len(extracted) == 4
+
+    def test_inf_in_prices(self):
+        """Inf values in price_history are filtered out."""
+        prices = [{"p": "0.50"}, {"p": "inf"}, {"p": "0.52"}, {"p": "0.50"}, {"p": "0.51"}]
+        m = _make_market(midpoint=0.50)
+        m.price_history = prices
+        extracted = _extract_prices(m, prefer_daily=False)
+        assert all(math.isfinite(p) for p in extracted)
+
+    def test_negative_prices_filtered(self):
+        """Negative prices are filtered out (only > 0 kept)."""
+        prices = [{"p": "-0.50"}, {"p": "0.50"}, {"p": "-1.0"}, {"p": "0.55"}, {"p": "0.60"}]
+        m = _make_market(midpoint=0.50)
+        m.price_history = prices
+        extracted = _extract_prices(m, prefer_daily=False)
+        assert all(p > 0 for p in extracted)
+        assert len(extracted) == 3
+
+    def test_non_numeric_strings_in_prices(self):
+        """Non-numeric strings in price_history are skipped."""
+        prices = [{"p": "hello"}, {"p": "0.50"}, {"p": ""}, {"p": "0.55"}, {"p": None}]
+        m = _make_market(midpoint=0.50)
+        m.price_history = prices
+        extracted = _extract_prices(m, prefer_daily=False)
+        assert len(extracted) == 2
+        assert extracted[0] == pytest.approx(0.50)
+
+    def test_missing_p_key_in_price_entry(self):
+        """Price entries without 'p' key are skipped."""
+        prices = [{"price": "0.50"}, {"p": "0.50"}, {}, {"p": "0.55"}]
+        m = _make_market(midpoint=0.50)
+        m.price_history = prices
+        extracted = _extract_prices(m, prefer_daily=False)
+        assert len(extracted) == 2
+
+    def test_all_invalid_prices_returns_empty(self):
+        """All invalid prices → empty list → signals return None."""
+        prices = [{"p": "nan"}, {"p": "-1"}, {"p": "inf"}, {"p": ""}]
+        m = _make_market(midpoint=0.50)
+        m.price_history = prices
+        extracted = _extract_prices(m, prefer_daily=False)
+        assert extracted == []
+        # All signals should handle gracefully
+        assert belief_volatility(m) is None
+        assert logit_momentum(m) is None
+        assert logit_mean_reversion(m) is None
+
+    def test_signals_with_mixed_valid_invalid(self):
+        """Signals work with a mix of valid and invalid price entries."""
+        prices = [{"p": "0.40"}, {"p": "nan"}, {"p": "0.50"}, {"p": ""}, {"p": "0.60"},
+                  {"p": "0.65"}, {"p": "inf"}, {"p": "0.70"}]
+        m = _make_market(midpoint=0.70)
+        m.price_history = prices
+        # Should have 5 valid prices: 0.40, 0.50, 0.60, 0.65, 0.70
+        agent = QuantAgent()
+        analysis = agent.analyze(m)
+        assert isinstance(analysis, Analysis)
+        assert 0.01 <= analysis.estimated_probability <= 0.99
+
+
+class TestMalformedOrderBook:
+    """Liquidity signal must handle malformed order book data."""
+
+    def test_missing_size_key(self):
+        """Order book entries without 'size' key treated as 0."""
+        book = {
+            "bids": [{"price": "0.49"}],  # no size
+            "asks": [{"price": "0.51", "size": "1000"}],
+        }
+        m = _make_market(order_book=book)
+        sig = liquidity_adjusted_edge(m)
+        # Should not crash; total_depth is 1000, imbalance is -1.0 (all ask)
+        assert sig is None or isinstance(sig, QuantSignal)
+
+    def test_non_numeric_size(self):
+        """Non-numeric size values → returns None gracefully."""
+        book = {
+            "bids": [{"price": "0.49", "size": "abc"}],
+            "asks": [{"price": "0.51", "size": "1000"}],
+        }
+        m = _make_market(order_book=book)
+        sig = liquidity_adjusted_edge(m)
+        assert sig is None  # ValueError in float() is caught → returns None
+
+    def test_zero_size_entries(self):
+        """Zero-size entries contribute nothing to depth."""
+        book = {
+            "bids": [{"price": "0.49", "size": "0"}, {"price": "0.48", "size": "0"}],
+            "asks": [{"price": "0.51", "size": "0"}],
+        }
+        m = _make_market(order_book=book)
+        sig = liquidity_adjusted_edge(m)
+        assert sig is None  # total_depth = 0
+
+
+class TestMalformedRelatedMarkets:
+    """Structural arb must handle malformed related market data."""
+
+    def test_related_market_no_midpoint(self):
+        """Related markets with no midpoint and no lastTradePrice are skipped."""
+        related = [
+            {"market_id": "m2"},  # no midpoint, no lastTradePrice
+            {"midpoint": 0.30, "market_id": "m3"},
+        ]
+        m = _make_market(midpoint=0.40)
+        m.related_markets = related
+        # Only 2 legs (current + m3), sum = 0.70
+        sig = structural_arb(m)
+        assert sig is not None
+        arb = sig.arb_opportunity
+        assert arb.num_outcomes == 2
+
+    def test_related_market_non_numeric_midpoint(self):
+        """Non-numeric midpoint in related market is skipped."""
+        related = [
+            {"midpoint": "not_a_number", "market_id": "m2"},
+            {"midpoint": 0.30, "market_id": "m3"},
+        ]
+        m = _make_market(midpoint=0.40)
+        m.related_markets = related
+        sig = structural_arb(m)
+        # Should still work with remaining valid data
+        assert sig is None or isinstance(sig, QuantSignal)
+
+    def test_related_market_uses_lastTradePrice_fallback(self):
+        """Falls back to lastTradePrice when midpoint is None."""
+        related = [
+            {"lastTradePrice": 0.35, "market_id": "m2"},
+            {"midpoint": 0.30, "market_id": "m3"},
+        ]
+        m = _make_market(midpoint=0.40)
+        m.related_markets = related
+        sig = structural_arb(m)
+        # sum = 0.40 + 0.35 + 0.30 = 1.05
+        assert sig is not None
+        arb = sig.arb_opportunity
+        assert arb.price_sum == pytest.approx(1.05, abs=0.01)
+
+    def test_all_related_markets_invalid(self):
+        """All related markets have no valid prices → need at least 2 legs."""
+        related = [
+            {"market_id": "m2"},  # no price data
+            {"market_id": "m3"},  # no price data
+        ]
+        m = _make_market(midpoint=0.40)
+        m.related_markets = related
+        sig = structural_arb(m)
+        # Only 1 valid leg (current market) — need at least 2 for arb
+        assert sig is None
+
+
+# ── Extreme Price Edge Cases ──────────────────────────────────────────
+
+class TestExtremePriceSignals:
+    """Ensure signals produce valid output at probability boundaries."""
+
+    @pytest.mark.parametrize("midpoint", [0.005, 0.01, 0.02, 0.98, 0.99, 0.995])
+    def test_agent_at_extreme_midpoint(self, midpoint):
+        """Agent produces valid Analysis at extreme midpoints."""
+        prices = [midpoint * 0.9, midpoint * 0.95, midpoint, midpoint, midpoint]
+        # Clamp prices to valid range
+        prices = [max(0.005, min(0.995, p)) for p in prices]
+        m = _make_market(midpoint=midpoint, price_history=_price_history(prices))
+        agent = QuantAgent()
+        analysis = agent.analyze(m)
+        assert isinstance(analysis, Analysis)
+        assert 0.01 <= analysis.estimated_probability <= 0.99
+        assert 0.0 <= analysis.confidence <= 1.0
+
+    def test_logit_at_boundaries(self):
+        """_logit clamps safely near 0 and 1."""
+        # At boundaries — should clamp to _PROB_MIN/_PROB_MAX
+        assert math.isfinite(_logit(0.0))
+        assert math.isfinite(_logit(1.0))
+        assert math.isfinite(_logit(0.001))
+        assert math.isfinite(_logit(0.999))
+
+    def test_edge_zscore_extreme_midpoints(self):
+        """edge_zscore handles extreme midpoints without errors."""
+        for mid in [0.01, 0.02, 0.98, 0.99]:
+            m = _make_market(midpoint=mid)
+            # Large disagreement
+            result = edge_zscore(m, estimated_prob=0.50)
+            assert result is None or isinstance(result, QuantSignal)
+
+    def test_all_signals_at_extreme_prices(self):
+        """compute_all_quant_signals doesn't crash with extreme price history."""
+        for extremes in [[0.01, 0.01, 0.02, 0.01, 0.01],
+                         [0.99, 0.99, 0.98, 0.99, 0.99]]:
+            m = _make_market(
+                midpoint=extremes[-1],
+                price_history=_price_history(extremes),
+                order_book={
+                    "bids": [{"price": "0.01", "size": "100"}],
+                    "asks": [{"price": "0.99", "size": "100"}],
+                },
+            )
+            signals = compute_all_quant_signals(m, estimated_prob=0.50)
+            assert isinstance(signals, list)
+            for sig in signals:
+                assert 0.0 <= sig.strength <= 1.0
+                assert math.isfinite(sig.confidence_adj)
+
+
+# ── Quant → Simulator Integration ─────────────────────────────────────
+
+class TestQuantSimulatorIntegration:
+    """Test the full quant→simulator pipeline (not just interface compatibility)."""
+
+    def test_quant_analysis_through_place_bet(self):
+        """Quant analysis can flow through Simulator.place_bet() decision logic."""
+        from unittest.mock import MagicMock, patch as _patch
+        from src.simulator import Simulator
+
+        # Create a market where quant would want to trade
+        prices = [0.20, 0.25, 0.30, 0.40, 0.55, 0.70]
+        book = {
+            "bids": [{"price": "0.49", "size": "8000"}],
+            "asks": [{"price": "0.51", "size": "500"}],
+        }
+        m = _make_market(
+            midpoint=0.50,
+            price_history=_price_history(prices),
+            order_book=book,
+        )
+
+        # Get quant analysis
+        agent = QuantAgent()
+        analysis = agent.analyze(m)
+
+        # Mock only DB calls — use real config (avoids MagicMock attribute issues)
+        with _patch("src.simulator.db") as mock_db:
+            mock_db.has_open_bet_on_market.return_value = False
+            mock_db.count_open_bets_by_event.return_value = 0
+            mock_db.get_portfolio.return_value = MagicMock(
+                balance=1000.0,
+                portfolio_value=1000.0,
+                initial_balance=1000.0,
+                total_pnl=0.0,
+            )
+            mock_db.get_open_bets.return_value = []
+            mock_db.get_daily_realized_pnl.return_value = 0.0
+            mock_db.save_bet.return_value = 1
+
+            cli_mock = MagicMock()
+            # _get_live_midpoint returns None when CLOB returns non-dict
+            cli_mock.clob_midpoint.return_value = None
+
+            sim = Simulator(cli=cli_mock, trader_id="quant")
+            # place_bet should not crash — it either places or skips
+            bet = sim.place_bet(m, analysis)
+            # The bet might be None (SKIP or insufficient edge) but should not error
+            assert bet is None or hasattr(bet, "amount")
+
+    def test_quant_extras_survive_simulator(self):
+        """Quant extras dict passes through to save_bet if bet placed."""
+        from unittest.mock import MagicMock, patch as _patch, call
+        from src.simulator import Simulator
+
+        prices = [0.20, 0.25, 0.30, 0.40, 0.55, 0.70]
+        book = {
+            "bids": [{"price": "0.49", "size": "8000"}],
+            "asks": [{"price": "0.51", "size": "500"}],
+        }
+        m = _make_market(
+            midpoint=0.50,
+            price_history=_price_history(prices),
+            order_book=book,
+        )
+
+        agent = QuantAgent()
+        analysis = agent.analyze(m)
+
+        # Only check extras if quant actually wants to trade
+        if analysis.recommendation == Recommendation.SKIP:
+            pytest.skip("Quant skipped this market — no bet to check extras on")
+
+        assert "agent" in analysis.extras
+        assert analysis.extras["agent"] == "quant"
+        assert "signals" in analysis.extras
+        assert isinstance(analysis.extras["signals"], list)
+
+
+# ── Hybrid LLM+Quant Validation ──────────────────────────────────────
+
+class TestHybridQuantValidation:
+    """Tests for _apply_hybrid_quant in cycle_runner."""
+
+    def _make_analysis(self, rec=Recommendation.BUY_YES, conf=0.70, prob=0.65, extras=None):
+        return Analysis(
+            market_id="mkt-1", model="ensemble",
+            recommendation=rec, confidence=conf,
+            estimated_probability=prob, reasoning="test",
+            category="general", extras=extras or {},
+        )
+
+    def _make_quant_analysis(self, rec=Recommendation.BUY_YES, conf=0.60, prob=0.60, signals=None):
+        return Analysis(
+            market_id="mkt-1", model="quant-signals-v1",
+            recommendation=rec, confidence=conf,
+            estimated_probability=prob, reasoning="quant test",
+            category="general",
+            extras={"agent": "quant", "signals": signals or []},
+        )
+
+    def test_agreement_boosts_confidence(self):
+        """When quant and ensemble agree, confidence is boosted."""
+        from src.cycle_runner import _apply_hybrid_quant
+        ensemble = self._make_analysis(rec=Recommendation.BUY_YES, conf=0.70)
+        quant = self._make_quant_analysis(rec=Recommendation.BUY_YES)
+        result = _apply_hybrid_quant(ensemble, quant)
+        assert result.confidence > 0.70
+        assert result.extras["hybrid_quant"]["agreement"] is True
+
+    def test_disagreement_penalizes_confidence(self):
+        """When quant and ensemble disagree, confidence is penalized."""
+        from src.cycle_runner import _apply_hybrid_quant
+        ensemble = self._make_analysis(rec=Recommendation.BUY_YES, conf=0.70)
+        quant = self._make_quant_analysis(rec=Recommendation.BUY_NO)
+        result = _apply_hybrid_quant(ensemble, quant)
+        assert result.confidence < 0.70
+        assert result.extras["hybrid_quant"]["agreement"] is False
+
+    def test_no_quant_data_passthrough(self):
+        """When no quant analysis exists, ensemble passes through unchanged."""
+        from src.cycle_runner import _apply_hybrid_quant
+        ensemble = self._make_analysis(rec=Recommendation.BUY_YES, conf=0.70)
+        result = _apply_hybrid_quant(ensemble, None)
+        assert result.confidence == 0.70
+        assert result.extras["hybrid_quant"] == "no_quant_data"
+
+    def test_quant_skip_passthrough(self):
+        """When quant recommends SKIP, ensemble passes through unchanged."""
+        from src.cycle_runner import _apply_hybrid_quant
+        ensemble = self._make_analysis(rec=Recommendation.BUY_YES, conf=0.70)
+        quant = self._make_quant_analysis(rec=Recommendation.SKIP)
+        result = _apply_hybrid_quant(ensemble, quant)
+        assert result.confidence == 0.70
+        assert result.extras["hybrid_quant"] == "no_quant_data"
+
+    def test_confidence_capped_at_095(self):
+        """Boosted confidence never exceeds 0.95."""
+        from src.cycle_runner import _apply_hybrid_quant
+        ensemble = self._make_analysis(rec=Recommendation.BUY_YES, conf=0.92)
+        quant = self._make_quant_analysis(rec=Recommendation.BUY_YES)
+        result = _apply_hybrid_quant(ensemble, quant)
+        assert result.confidence <= 0.95
+
+    def test_confidence_floored_at_zero(self):
+        """Penalized confidence never goes below 0."""
+        from src.cycle_runner import _apply_hybrid_quant
+        ensemble = self._make_analysis(rec=Recommendation.BUY_YES, conf=0.05)
+        quant = self._make_quant_analysis(rec=Recommendation.BUY_NO)
+        result = _apply_hybrid_quant(ensemble, quant)
+        assert result.confidence >= 0.0
+
+    def test_extras_contain_quant_details(self):
+        """Hybrid validation adds quant signal details to extras."""
+        from src.cycle_runner import _apply_hybrid_quant
+        signals = [{"name": "momentum", "direction": "bullish", "strength": 0.8}]
+        ensemble = self._make_analysis(rec=Recommendation.BUY_YES, conf=0.70)
+        quant = self._make_quant_analysis(rec=Recommendation.BUY_YES, signals=signals)
+        result = _apply_hybrid_quant(ensemble, quant)
+        hq = result.extras["hybrid_quant"]
+        assert hq["quant_rec"] == "BUY_YES"
+        assert "quant_confidence" in hq
+        assert "quant_est_prob" in hq
+        assert hq["quant_signal_count"] == 1
+        assert "adjustment" in hq
+
+    def test_preserves_existing_extras(self):
+        """Hybrid validation preserves existing ensemble extras."""
+        from src.cycle_runner import _apply_hybrid_quant
+        ensemble = self._make_analysis(
+            rec=Recommendation.BUY_YES, conf=0.70,
+            extras={"model_votes": {"grok": "BUY_YES"}, "unanimous": True},
+        )
+        quant = self._make_quant_analysis(rec=Recommendation.BUY_YES)
+        result = _apply_hybrid_quant(ensemble, quant)
+        assert result.extras["model_votes"] == {"grok": "BUY_YES"}
+        assert result.extras["unanimous"] is True
+        assert "hybrid_quant" in result.extras

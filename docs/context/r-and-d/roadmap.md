@@ -1,7 +1,7 @@
 # Roadmap
 
 > Current grade: **A-** | Target: **A+** (production-ready)
-> 823 tests passing | 24 source modules | GitHub Actions CI active
+> 877 tests passing | 24 source modules | GitHub Actions CI active
 > Last updated: 2026-03-04
 
 ---
@@ -29,11 +29,12 @@ Parallel quantitative trading agent — zero LLM cost, pure math signals.
 | Q1.6 | **Deep Review Fixes** — classify_market args, NegRisk arb sum, extras merge, NaN filtering, edge_zscore confirmation bias, arb threshold | 0.5 day | **DONE** |
 | Q1.7 | **Data Pipeline Overhaul** — daily price history (7d weekly), separate wider quant scan (200 markets), related_markets cap raised to 50, quant-specific cooldown (0.5h) | 0.5 day | **DONE** |
 | Q1.8 | **Code Review + Enhancements** — 2 bugs fixed (2-outcome NegRisk arb, event limit), Kyle state-dependent slippage (`uncertainty × spread_factor`), arb execution model (`ArbOpportunity`/`ArbLeg` with profit calc), 5 design issues documented | 0.5 day | **DONE** |
+| Q1.9 | **Hybrid LLM+Quant** — quant validation gate for ensemble, EWMA signals, LLM cross-validation, edge-case hardening | 0.5 day | **DONE** |
 | Q2 | **Particle Filter** — Sequential Monte Carlo, stateful probability tracking, credible intervals | 1-2 days | PLANNED |
 | Q3 | **Monte Carlo Engine** — outcome simulation, variance reduction (antithetic/control/stratified) | 1-2 days | PLANNED |
 | Q4 | **Copula Portfolio Risk** — cross-position correlation, t-copula tail dependence, position sizing | 2-3 days | PLANNED |
 
-**Architecture:** Parallel trader_id="quant" with own $1000 balance. Produces Analysis objects → existing Simulator handles Kelly/slippage/risk. Future integration into main LLM pipeline planned after proving profitability.
+**Architecture:** Parallel trader_id="quant" with own $1000 balance. Produces Analysis objects → existing Simulator handles Kelly/slippage/risk. **Hybrid integration active**: quant signals validate ensemble recommendations (agreement boost +10%, disagreement penalty -15%). Feature-flagged via `USE_HYBRID_QUANT`.
 
 ---
 
@@ -43,7 +44,7 @@ Testing hardening to reach A grade on testing dimension.
 
 | # | Task | Effort | Priority |
 |---|------|--------|----------|
-| 4 | **Phase T2: Property-based tests** | 3-4 hrs | HIGH — `hypothesis` library for invariant fuzzing (Kelly bounds, NO-side complement, slippage limits) |
+| 4 | ~~Phase T2: Property-based tests~~ | DONE | 21 Hypothesis tests: Kelly bounds, Kyle slippage monotonicity/symmetry, logit roundtrip, signal aggregation clamp, balance conservation |
 | 5 | **Phase T3: Real PostgreSQL integration tests** | 6-8 hrs | HIGH — actual SQL execution catches type errors (make_interval), constraint violations |
 | 6 | **Phase T4: Simulator direct tests** | 4-6 hrs | MEDIUM — core money logic (`place_bet`, `update_positions`) currently only tested indirectly |
 | 7 | **Phase T5: Coverage enforcement in CI** | 2-3 hrs | LOW — `pytest --cov-fail-under=75` in GitHub Actions |
@@ -81,7 +82,7 @@ Features for A+ grade and real-money transition.
 | Backtesting | A- | A- | Maintained |
 | Observability | B+ | A | Alerting, health checks |
 | Database | A- | A | Alembic migrations |
-| Testing | B | **A** | T1 done, T2-T5 remaining (property-based, real DB, simulator, coverage) |
+| Testing | B+ | **A** | T1+T2 done, T3-T5 remaining (real DB, simulator, coverage) |
 
 **Overall A+ requires**: All dimensions A- or better, testing at A.
 
@@ -151,6 +152,12 @@ LOW IMPACT     Simulator tests (T4)   Multi-platform (aspirational)
 - Replaced 3 source-inspection anti-pattern tests with behavioral tests
 - Fixed 1 vacuous assertion in test_integration.py
 - 5 new tests in test_fee_accounting.py
+
+### Phase Q Fixes + Phantom Trade Protection (DONE 2026-03-04)
+- **4 HIGH fixes**: Postgres 16 CHECK constraint syntax, scanner pagination abort, new model weight fallback, longshot bias side-dependency
+- **Stale price guard** (`SIM_STALE_PRICE_THRESHOLD=0.10`): Re-fetch CLOB midpoint at bet time, reject if >10% drift
+- **Min hold time** (`SIM_MIN_HOLD_SECONDS=300`): Skip exit logic for bets younger than 5 minutes
+- Identified 80% of Grok PnL was phantom trades (same-cycle entry→exit in 4-9 seconds)
 
 </details>
 

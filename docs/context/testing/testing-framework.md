@@ -1,8 +1,8 @@
 # Testing Framework & Strategy
 
 > Updated: 2026-03-04
-> Current state: **823 tests passing**, 24 test files, 8 skipped (skip without fastapi)
-> Grade: **B** for testing — good breadth, quant coverage strong, depth gaps in simulator/DB
+> Current state: **877 tests passing**, 26 test files, 8 skipped (skip without fastapi)
+> Grade: **B+** for testing — good breadth, quant coverage excellent (142 tests), hybrid model tested, depth gaps in simulator/DB
 
 ---
 
@@ -33,9 +33,10 @@
 | test_enrichment.py | 16 | Market enrichment, concurrent requests, caching |
 | test_dashboard_controls.py | 14 | Settings validation, dashboard API endpoints |
 | test_prediction_quality.py | 14 | Prediction accuracy metrics, calibration tracking |
-| **test_quant.py** | **109** | **Quant signals, agent, arb execution model, aggregation, daily data, edge cases** |
+| **test_quant.py** | **142** | **Quant signals, agent, arb execution model, aggregation, daily data, edge cases, malformed data, extreme prices, hybrid LLM+quant validation, quant→simulator integration** |
 | test_balance_lifecycle.py | 25 | Full bet lifecycle, conservation invariant, double-resolve |
 | test_fee_accounting.py | 5 | Fee deduction in resolve_bet/close_bet |
+| **test_property_based.py** | **21** | **Hypothesis property-based: Kelly bounds, slippage monotonicity, logit roundtrip, balance conservation** |
 
 ### Fixtures (conftest.py)
 
@@ -49,7 +50,7 @@
 - **Pytest parametrize**: Used for Kelly sizing edge cases, risk metric calculations
 - **Freezegun**: Time-dependent tests (market expiration, cooldowns)
 - **Pytest approx**: Float comparisons with configurable tolerances
-- **No property-based testing** (hypothesis not used)
+- **Hypothesis property-based testing**: 21 tests in `test_property_based.py` (Kelly bounds, slippage, logit roundtrip, balance conservation)
 - **No real DB integration tests** (all DB interactions mocked)
 
 ---
@@ -111,34 +112,13 @@ def test_no_side_entry_price_is_complement():
 
 **Status**: Fixed. Tests added to test_slippage.py.
 
-### Bug 2: Fee Not Deducted From Balance (UNFIXED)
+### Bug 2: Fee Not Deducted From Balance (FIXED 2026-03-03)
 
-**What**: In `resolve_bet()` and `close_bet()`, fees are deducted from the PnL tracking variable but NOT from the payout returned to the portfolio balance.
+**What**: In `resolve_bet()` and `close_bet()`, fees were deducted from the PnL tracking variable but NOT from the payout returned to the portfolio balance.
 
-```python
-# Current code (db.py ~line 388):
-pnl = payout - cost
-if pnl > 0:
-    pnl -= pnl * config.SIM_FEE_RATE   # Fee tracked in PnL ✓
-# But balance gets full payout:
-balance = balance + payout                # BUG: should be (payout - fee)
-```
+**Impact**: ~2% overstatement of balance on every winning bet.
 
-**Impact**: ~2% overstatement of balance on every winning bet. Cumulative ~$11.50 for current Grok portfolio.
-
-**What test would catch it**:
-```python
-def test_resolve_winning_bet_balance_accounting():
-    """Balance after resolve = balance_before - cost + payout - fee."""
-    # Setup: balance=1000, bet cost=100, payout=200 (100 profit)
-    # Fee = 100 * 0.02 = 2.00
-    # Expected balance = 1000 + 200 - 2.00 = 1198.00
-    # Bug produces: 1000 + 200 = 1200.00 (missing $2 fee)
-    ...
-    assert final_balance == pytest.approx(1198.00)
-```
-
-**Status**: **FIXED 2026-03-03**. Fee now deducted from both `pnl` and `payout` in both functions. 5 behavioral tests in `test_fee_accounting.py`.
+**Status**: **FIXED**. Fee now deducted from both `pnl` and `payout` in `resolve_bet()` and `close_bet()`. 5 behavioral tests in `test_fee_accounting.py`, 25 balance lifecycle tests in `test_balance_lifecycle.py`.
 
 ### Bug 3: make_interval Float Argument (FIXED)
 
@@ -175,31 +155,13 @@ Tests that duplicate the production formula and compare output to their own copy
 
 ## 4. Critical Testing Gaps
 
-### Gap 1: No End-to-End Balance Accounting (Priority: CRITICAL)
+### Gap 1: Balance Accounting — CLOSED (Phase T1 done)
 
-**Problem**: No test verifies the complete lifecycle: `save_bet()` (deduct amount) -> `resolve_bet()` (return payout - fee) or `close_bet()` (return payout - fee). All DB tests use mocks, so the actual SQL arithmetic is untested.
+25 lifecycle tests in `test_balance_lifecycle.py` + 5 fee accounting tests. Conservation invariant proven.
 
-**Why it matters**: The fee bug (Bug 2) exists precisely because no test checks that `balance_after = balance_before - cost + payout - fee`. This is the most financially dangerous gap.
+### Gap 2: Property-Based Invariants — CLOSED (Phase T2 done)
 
-**Proposed tests**:
-- `test_full_bet_lifecycle_winning_yes` — place bet, resolve as winner, verify balance
-- `test_full_bet_lifecycle_losing_yes` — place bet, resolve as loser, verify balance = before - cost
-- `test_full_bet_lifecycle_close_with_profit` — place bet, close at profit, verify fee deducted
-- `test_full_bet_lifecycle_close_at_loss` — place bet, close at loss, verify no fee
-- `test_balance_conservation_invariant` — sum of (balance + open_bet_values) should equal (initial_balance + realized_pnl)
-
-### Gap 2: No Property-Based Invariant Tests (Priority: HIGH)
-
-**Problem**: No tests use `hypothesis` to generate random inputs and verify invariants hold.
-
-**Invariants that should always hold**:
-1. `kelly_size >= 0` and `kelly_size <= config.MAX_BET_PCT * balance`
-2. `portfolio_value = balance + sum(open_bet_current_values)`
-3. `entry_price * shares ≈ amount` (cost basis)
-4. `slippage_bps >= 0` when order book has asks above midpoint
-5. `_baseline_price() > 0` for any valid midpoint/spread
-6. `_fallback_price() > _baseline_price()` always
-7. NO entry price = 1 - YES bid price (complement relationship)
+21 Hypothesis tests in `test_property_based.py`: Kelly bounds, slippage monotonicity/symmetry, logit roundtrip, signal aggregation clamp, balance conservation.
 
 ### Gap 3: No Real Database Tests (Priority: HIGH)
 

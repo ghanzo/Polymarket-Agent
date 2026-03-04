@@ -154,9 +154,14 @@ def belief_volatility(market: Market, window: int = 10) -> QuantSignal | None:
     if not logit_returns:
         return None
 
-    mean_ret = sum(logit_returns) / len(logit_returns)
+    # Exponentially-weighted volatility (EWMA) — recent returns weighted more
+    # decay factor 0.94 gives ~3-day half-life on 7-day daily data
+    decay = 0.94
     n = len(logit_returns)
-    variance = sum((r - mean_ret) ** 2 for r in logit_returns) / max(n - 1, 1)
+    weights = [decay ** (n - 1 - i) for i in range(n)]
+    w_sum = sum(weights)
+    mean_ret = sum(r * w for r, w in zip(logit_returns, weights)) / w_sum
+    variance = sum(w * (r - mean_ret) ** 2 for r, w in zip(logit_returns, weights)) / w_sum
     realized_vol = math.sqrt(variance)
 
     # Thresholds calibrated empirically:
@@ -203,18 +208,25 @@ def logit_momentum(market: Market) -> QuantSignal | None:
     if len(prices) < 4:
         return None
 
-    logit_start = _logit(prices[0])
-    logit_end = _logit(prices[-1])
-    logit_drift = logit_end - logit_start
+    logit_prices = [_logit(p) for p in prices]
+
+    # Recency-weighted logit drift: weighted average of per-step returns
+    # where recent steps have exponentially more weight (decay=0.90)
+    returns = [logit_prices[i] - logit_prices[i - 1] for i in range(1, len(logit_prices))]
+    n = len(returns)
+    decay = 0.90
+    weights = [decay ** (n - 1 - i) for i in range(n)]
+    w_sum = sum(weights)
+    weighted_drift = sum(r * w for r, w in zip(returns, weights)) / w_sum * n
 
     threshold = config.QUANT_LOGIT_MOMENTUM_THRESHOLD
 
-    if abs(logit_drift) < threshold:
+    if abs(weighted_drift) < threshold:
         return None
 
     # Strength saturates at N× threshold
-    strength = min(abs(logit_drift) / (threshold * config.QUANT_SIGNAL_SATURATION_MULT), 1.0)
-    direction = "bullish" if logit_drift > 0 else "bearish"
+    strength = min(abs(weighted_drift) / (threshold * config.QUANT_SIGNAL_SATURATION_MULT), 1.0)
+    direction = "bullish" if weighted_drift > 0 else "bearish"
     adj = strength * config.QUANT_MAX_SIGNAL_ADJ
     if direction == "bearish":
         adj = -adj
@@ -224,7 +236,7 @@ def logit_momentum(market: Market) -> QuantSignal | None:
         direction=direction,
         strength=strength,
         confidence_adj=adj,
-        description=f"Logit drift {logit_drift:+.3f} ({prices[0]:.3f} → {prices[-1]:.3f})",
+        description=f"Weighted logit drift {weighted_drift:+.3f} ({prices[0]:.3f} → {prices[-1]:.3f})",
     )
 
 
@@ -339,8 +351,11 @@ def liquidity_adjusted_edge(market: Market) -> QuantSignal | None:
     if not bids and not asks:
         return None
 
-    bid_depth = sum(float(b.get("size", 0)) for b in bids)
-    ask_depth = sum(float(a.get("size", 0)) for a in asks)
+    try:
+        bid_depth = sum(float(b.get("size", 0)) for b in bids)
+        ask_depth = sum(float(a.get("size", 0)) for a in asks)
+    except (ValueError, TypeError):
+        return None
     total_depth = bid_depth + ask_depth
 
     if total_depth <= 0:

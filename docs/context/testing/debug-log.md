@@ -29,7 +29,7 @@ def test_no_side_entry_price_is_complement():
 
 ---
 
-## Bug 2: Fee Not Deducted From Balance (2026-03-01) — UNFIXED
+## Bug 2: Fee Not Deducted From Balance (2026-03-01) — FIXED 2026-03-03
 
 **What broke**: In `src/db.py`, `resolve_bet()` and `close_bet()` deduct fees from the PnL tracking variable but NOT from the balance payout.
 
@@ -39,28 +39,16 @@ def test_no_side_entry_price_is_complement():
 
 **Root cause**:
 ```python
-# Current (buggy):
+# Was (buggy):
 pnl = payout - cost
 if pnl > 0:
     pnl -= pnl * config.SIM_FEE_RATE   # Fee tracked in PnL ✓
 balance = balance + payout               # BUG: should be (payout - fee) ✗
-
-# Correct:
-fee = max(0, pnl) * config.SIM_FEE_RATE
-balance = balance + payout - fee         # Fee deducted from balance ✓
 ```
 
-**What test would have caught it**:
-```python
-def test_resolve_winning_bet_balance_accounting():
-    # balance=1000, bet cost=100, payout=200 (100 profit)
-    # fee = 100 * 0.02 = 2.00
-    # expected = 1000 + 200 - 2.00 = 1198.00
-    # bug produces: 1000 + 200 = 1200.00
-    assert final_balance == pytest.approx(1198.00)
-```
+**Fix**: Fee now deducted from both `pnl` and `payout` in `resolve_bet()` and `close_bet()`. 5 behavioral tests in `test_fee_accounting.py`. 25 balance lifecycle tests in `test_balance_lifecycle.py`.
 
-**Lesson**: Balance conservation invariants must be tested end-to-end with actual arithmetic, not mocked DB calls. This is the Phase T1 priority.
+**Lesson**: Balance conservation invariants must be tested end-to-end with actual arithmetic, not mocked DB calls.
 
 ---
 
@@ -103,6 +91,56 @@ def test_cooldown_query_with_float_hours():
 
 ---
 
+## Bug 5: Phantom Trades — Stale Price Entry (2026-03-04) — FIXED
+
+**What broke**: Scanner enriches market midpoint (e.g., 0.50) → Grok analysis takes 30-60s → `place_bet()` enters at stale enriched midpoint → `update_positions()` immediately re-queries CLOB → price now 0.999 → take-profit triggers → 95%+ profit in 5 seconds.
+
+**Symptoms**: 80% of total PnL ($841/$1054) came from 20 bets held under 60 seconds.
+
+**Impact**: Completely unrealistic profitability. Paper trade results meaningless.
+
+**Root cause**: No freshness check between enrichment time and bet placement. Code path in `cycle_runner.py:304-315` — `place_bet()` then `update_positions()` only 4-8 seconds apart.
+
+**Fix (two layers)**:
+1. **Stale price guard** (`SIM_STALE_PRICE_THRESHOLD=0.10`): Re-fetch CLOB midpoint at bet time, reject if >10% drift.
+2. **Min hold time** (`SIM_MIN_HOLD_SECONDS=300`): Skip exit logic for bets younger than 5 minutes.
+
+**Lesson**: Paper trading must simulate real execution constraints. Instant entry→exit within the same cycle is never realistic.
+
+---
+
+## Bug 6: Postgres 16 CHECK Constraint Syntax (2026-03-04) — FIXED
+
+**What broke**: `ADD CONSTRAINT IF NOT EXISTS` is Postgres 17+ syntax. Silently failed on our Postgres 16 container — no CHECK constraints were actually enforced.
+
+**Fix**: Changed to `DO $ BEGIN ... EXCEPTION WHEN duplicate_object THEN NULL; END $` pattern.
+
+---
+
+## Bug 7: Scanner Pagination Abort (2026-03-04) — FIXED
+
+**What broke**: `except APIError: break` in scanner aborted the entire scan on first API error instead of skipping that page.
+
+**Fix**: Changed to `except APIError: logger.warning(...); continue`.
+
+---
+
+## Bug 8: New Model Weight Fallback (2026-03-04) — FIXED
+
+**What broke**: New/unproven models in ensemble got `1/N` weight which could exceed proven models' weights.
+
+**Fix**: Changed fallback to `min(model_weights.values())` — new models start at minimum proven weight.
+
+---
+
+## Bug 9: Longshot Bias Side Dependency (2026-03-04) — FIXED
+
+**What broke**: Longshot bias correction was conditional on bet side (only applied to YES bets at low midpoints, NO bets at high midpoints). Should apply based on midpoint alone regardless of side.
+
+**Fix**: Removed side conditions from longshot bias in `simulator.py`.
+
+---
+
 ## Patterns Across All Bugs
 
 ### Pattern 1: Mock-Only DB Testing
@@ -116,3 +154,6 @@ Bug 3 failed silently — exceptions were caught and logged, but the system cont
 
 ### Pattern 4: Financial Invariants Missing
 Bug 2 is the most dangerous pattern: a slow, silent accumulation of accounting errors. Every winning bet adds ~2% phantom profit. Over 100 trades, that's meaningful. **Solution**: Phase T1 — balance conservation invariants as the #1 testing priority.
+
+### Pattern 5: Paper Trading Doesn't Simulate Reality
+Bug 5 showed that paper trading with instant entry→exit creates phantom profits. Any paper trading system must simulate real execution constraints: price freshness, hold times, order fill delays. Without these, profitability numbers are meaningless.

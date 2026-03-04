@@ -61,7 +61,7 @@ LLM ensemble analysis and quantitative signals are complementary, not competing.
 | Signal Quality | A | Multi-model ensemble, debate, calibration, longshot bias |
 | Risk Management | A- | Kelly sizing, trailing stops, drawdown limits, slippage. Fee bug fixed 2026-03-03. |
 | Architecture | A- | Modular, concurrent, well-split responsibilities |
-| Testing | B- | 687 tests, depth gaps in financial accounting. Source-inspection anti-patterns reduced. |
+| Testing | B+ | 844 tests, Phase T1 (lifecycle) + T2 (property-based) done. Gaps: real DB, simulator direct tests. |
 | Data Pipeline | B+ | ML pre-screening, but still HTTP polling (no WebSocket) |
 
 Target: **A+** — requires testing hardened to A, WebSocket real-time data.

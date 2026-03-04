@@ -15,18 +15,17 @@ Ensure math correctness, catch bugs early, and build confidence for real-money t
 
 ## Quick Reference
 
-- **712 tests** passing across 23 test files (5 fee accounting + 25 balance lifecycle tests added 2026-03-03)
-- **Grade**: B — Phase T1 (balance lifecycle) complete; systemic test weaknesses reduced
-- **Target**: A — requires Phases T2 (property-based invariants) and T3 (real PostgreSQL)
+- **844 tests** passing across 26 test files (includes quant, balance lifecycle, property-based, fee accounting)
+- **Grade**: B+ — Phase T1 (balance lifecycle) + T2 (property-based) complete; phantom trade protections added
+- **Target**: A — requires Phases T3 (real PostgreSQL) and T4 (simulator direct tests)
 - **Run tests**: `python -m pytest tests/ -q`
 - **With coverage**: `python -m pytest tests/ --cov=src --cov-report=html`
 
 ## Critical Gaps (Read Before Writing Tests)
 
-1. **No end-to-end balance accounting tests** — the fee bug exists because no test checks `balance_after = balance_before - cost + payout - fee`
-2. **No property-based invariant tests** — `hypothesis` not used; Kelly bounds, NO-side complement, slippage limits untested with random inputs
-3. **No real PostgreSQL tests** — all DB interactions mocked; actual SQL arithmetic untested (this is how make_interval float bug escaped)
-4. **No simulator direct tests** — core money logic only tested indirectly through mocked tests
+1. **No real PostgreSQL tests** — all DB interactions mocked; actual SQL arithmetic untested (this is how make_interval float bug escaped)
+2. **No simulator direct tests** — core money logic only tested indirectly through mocked tests
+3. **Quant edge cases** — no tests for malformed/missing data, extreme prices near 0/1, or quant→simulator integration
 
 ## Patterns Observed
 

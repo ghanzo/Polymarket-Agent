@@ -36,12 +36,16 @@ class QuantAgent:
 
     TRADER_ID = TRADER_ID
 
-    def analyze(self, market: Market, web_context: str = "") -> Analysis:
+    def analyze(self, market: Market, web_context: str = "",
+                llm_estimated_prob: float | None = None) -> Analysis:
         """Analyze a market using quantitative signals.
 
         Args:
             market: Market to analyze.
             web_context: Ignored (kept for interface compatibility with LLM analyzers).
+            llm_estimated_prob: Optional probability estimate from LLM ensemble.
+                When provided, enables edge_zscore cross-validation (quant checks
+                whether the LLM's estimate is statistically significant vs market noise).
 
         Returns:
             Analysis with recommendation, confidence, and probability estimate.
@@ -60,10 +64,11 @@ class QuantAgent:
                 extras={"agent": "quant", "skip_reason": "no_midpoint"},
             )
 
-        # Compute all independent signals (no edge_zscore — it needs an external
-        # probability estimate to be meaningful; using our own base_adj as input
-        # would just echo our own signals back, creating confirmation bias)
-        signals = compute_all_quant_signals(market, estimated_prob=None)
+        # Compute signals. When LLM probability is available, enable edge_zscore
+        # for cross-validation (checks whether LLM's estimate is statistically
+        # significant vs market noise — avoids confirmation bias since the
+        # probability comes from an independent source)
+        signals = compute_all_quant_signals(market, estimated_prob=llm_estimated_prob)
 
         # Aggregate signals
         direction, net_adj, avg_strength = aggregate_quant_signals(signals)
@@ -79,6 +84,11 @@ class QuantAgent:
 
         # Build extras for transparency
         extras = self._build_extras(signals, est_prob, midpoint, net_adj)
+        if llm_estimated_prob is not None:
+            extras["llm_cross_validation"] = {
+                "llm_est_prob": round(llm_estimated_prob, 4),
+                "edge_zscore_enabled": True,
+            }
 
         # Classify market category
         try:
