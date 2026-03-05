@@ -1,8 +1,8 @@
 # Roadmap
 
 > Current grade: **A-** | Target: **A+** (production-ready)
-> 877 tests passing | 24 source modules | GitHub Actions CI active
-> Last updated: 2026-03-04
+> 1051+ tests passing | 30+ source modules | GitHub Actions CI active
+> Last updated: 2026-03-05
 
 ---
 
@@ -35,6 +35,25 @@ Parallel quantitative trading agent — zero LLM cost, pure math signals.
 | Q4 | **Copula Portfolio Risk** — cross-position correlation, t-copula tail dependence, position sizing | 2-3 days | PLANNED |
 
 **Architecture:** Parallel trader_id="quant" with own $1000 balance. Produces Analysis objects → existing Simulator handles Kelly/slippage/risk. **Hybrid integration active**: quant signals validate ensemble recommendations (agreement boost +10%, disagreement penalty -15%). Feature-flagged via `USE_HYBRID_QUANT`.
+
+---
+
+## Phase S: Stock Market Integration (Active)
+
+Dual-market trading: Polymarket + stock market running simultaneously. Macro thesis × quant signals.
+
+| # | Task | Effort | Status |
+|---|------|--------|--------|
+| S0 | **Documentation & Research** — vision, roadmap, architecture docs updated for dual-market | 0.5 day | **DONE** |
+| S1 | **Foundation** — Alpaca API client, model extensions, DB schema, config, theme definitions | 1 day | **DONE** |
+| S2 | **Signals & Scanner** — 6 log-return-space signal detectors, stock universe scanner | 1 day | **DONE** |
+| S3 | **Execution Pipeline** — StockSimulator, StockRunner, dashboard integration, CLI entry point | 1 day | **DONE** |
+| S4 | **Testing** — ~155 new tests across all stock components | 1 day | **DONE** |
+| S5 | **Backtest & Optimization** — Walk-forward on Alpaca historical data, theme weight optimization | 2-3 days | PLANNED |
+
+**Architecture:** `src/stock/` package with own API, scanner, signals, simulator, runner. Separate `stock_quant` trader_id with $1000 balance. Feature-flagged via `STOCK_ENABLED`. Alpaca Markets API for paper trading (same API for live — just flip `paper=True`).
+
+**Macro Thesis:** Peak oil (20%), China rise (20%), AI black swan (25%), new energy (20%), critical materials (15%). Theme weights × quant signals = composite scoring.
 
 ---
 

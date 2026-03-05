@@ -20,6 +20,7 @@ from src.quant.signals import (
     aggregate_quant_signals,
     QuantSignal,
     ArbOpportunity,
+    belief_volatility,
 )
 
 logger = logging.getLogger("quant.agent")
@@ -35,6 +36,15 @@ class QuantAgent:
     """
 
     TRADER_ID = TRADER_ID
+
+    def __init__(self):
+        self._pf = None
+        self._pf_store = None
+        if config.USE_PARTICLE_FILTER:
+            from src.quant.particle_filter import ParticleFilter
+            from src.quant.pf_store import PFStore
+            self._pf = ParticleFilter()
+            self._pf_store = PFStore()
 
     def analyze(self, market: Market, web_context: str = "",
                 llm_estimated_prob: float | None = None) -> Analysis:
@@ -74,16 +84,32 @@ class QuantAgent:
         direction, net_adj, avg_strength = aggregate_quant_signals(signals)
         est_prob = max(0.01, min(0.99, midpoint + net_adj))
 
+        # Particle filter: stateful probability tracking
+        pf_posterior = None
+        pf_confidence_bonus = 0.0
+        if self._pf and self._pf_store and midpoint:
+            try:
+                pf_posterior, pf_confidence_bonus, est_prob = self._run_particle_filter(
+                    market, signals, est_prob,
+                )
+            except Exception as e:
+                logger.warning("Particle filter failed for %s: %s", market.id, e)
+
         # Determine recommendation
         recommendation, confidence = self._decide(
             market, est_prob, midpoint, signals, avg_strength,
         )
+        # Apply PF confidence bonus (narrow credible interval = higher confidence)
+        if pf_confidence_bonus > 0 and confidence > 0:
+            confidence = min(0.95, confidence + pf_confidence_bonus)
 
         # Build reasoning from signals
         reasoning = self._build_reasoning(market, signals, est_prob, midpoint)
 
         # Build extras for transparency
         extras = self._build_extras(signals, est_prob, midpoint, net_adj)
+        if pf_posterior:
+            extras["pf_posterior"] = pf_posterior
         if llm_estimated_prob is not None:
             extras["llm_cross_validation"] = {
                 "llm_est_prob": round(llm_estimated_prob, 4),
@@ -133,19 +159,38 @@ class QuantAgent:
             else:
                 return Recommendation.BUY_NO, confidence
 
-        # Need minimum number of agreeing signals
+        # Need minimum number of total signals
         if len(signals) < config.QUANT_MIN_SIGNALS:
             return Recommendation.SKIP, 0.0
 
         edge = est_prob - midpoint
 
-        # Skip if edge too small
+        # Skip if edge too small (must cover fees + spread)
         if abs(edge) < config.QUANT_MIN_EDGE:
             return Recommendation.SKIP, 0.0
 
-        # Confidence from avg signal strength + edge magnitude + signal agreement bonus
-        signal_count_bonus = min(0.1, len(signals) * 0.03)
-        confidence = min(0.95, avg_strength * 0.6 + abs(edge) * 1.5 + signal_count_bonus)
+        # Directional agreement check: require minimum directional signals
+        # agreeing on the trade direction. Neutral signals (belief_volatility)
+        # don't count — they inform confidence, not direction.
+        trade_direction = "bullish" if edge > 0 else "bearish"
+        directional_signals = [s for s in signals if s.direction == trade_direction]
+        opposing_signals = [s for s in signals if s.direction != "neutral"
+                           and s.direction != trade_direction]
+
+        if len(directional_signals) < config.QUANT_MIN_DIRECTIONAL_SIGNALS:
+            return Recommendation.SKIP, 0.0
+
+        # Penalize conflicting signals: if opposing signals exist,
+        # require directional majority
+        if opposing_signals and len(directional_signals) <= len(opposing_signals):
+            return Recommendation.SKIP, 0.0
+
+        # Confidence from directional signal strength + edge magnitude
+        # Only count directional signals for strength (neutral informs risk, not confidence)
+        dir_avg_strength = (sum(s.strength for s in directional_signals)
+                           / len(directional_signals))
+        signal_count_bonus = min(0.1, len(directional_signals) * 0.03)
+        confidence = min(0.95, dir_avg_strength * 0.5 + abs(edge) * 1.0 + signal_count_bonus)
         if confidence < config.QUANT_MIN_CONFIDENCE:
             return Recommendation.SKIP, confidence
 
@@ -153,6 +198,45 @@ class QuantAgent:
             return Recommendation.BUY_YES, confidence
         else:
             return Recommendation.BUY_NO, confidence
+
+    def _run_particle_filter(
+        self,
+        market: Market,
+        signals: list[QuantSignal],
+        fallback_est_prob: float,
+    ) -> tuple[dict, float, float]:
+        """Run particle filter update and return (posterior_dict, confidence_bonus, est_prob).
+
+        Loads existing state from DB, updates with current observation,
+        saves back, and returns posterior statistics.
+        """
+        # Get belief volatility for initialization spread
+        vol_signal = next((s for s in signals if s.name == "belief_volatility"), None)
+        belief_vol = vol_signal.strength if vol_signal else None
+
+        # Load or initialize state
+        state = self._pf_store.load(market.id)
+        if state is None:
+            state = self._pf.initialize(market.midpoint, belief_vol)
+            state.market_id = market.id
+
+        # Update with current observation
+        state = self._pf.update(state, market.midpoint, signals)
+
+        # Compute posterior
+        posterior = self._pf.posterior(state)
+
+        # Save state for next cycle
+        self._pf_store.save(state)
+
+        # Use posterior mean as estimated probability
+        est_prob = posterior["posterior_mean"]
+
+        # Confidence bonus: narrow interval → high confidence
+        # Max bonus at interval_width=0, zero bonus at interval_width>=0.15
+        pf_confidence_bonus = max(0.0, 0.15 - posterior["interval_width"]) * 2
+
+        return posterior, pf_confidence_bonus, est_prob
 
     def _build_reasoning(
         self,

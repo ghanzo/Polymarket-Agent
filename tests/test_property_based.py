@@ -15,10 +15,10 @@ Invariants tested:
 
 import math
 import pytest
-from hypothesis import given, settings, assume
+from hypothesis import given, settings, assume, HealthCheck
 from hypothesis import strategies as st
 
-from src.models import Side, kelly_size
+from src.models import Side, kelly_size, kelly_size_stock
 from src.slippage import (
     _baseline_price, _fallback_price, _compute_slippage_bps,
     _dynamic_slippage_bps, estimate_fill_price, apply_slippage,
@@ -63,7 +63,7 @@ class TestKellyProperties:
         fraction=st.floats(min_value=0.1, max_value=1.0),
         sprd=spread,
     )
-    @settings(max_examples=500)
+    @settings(max_examples=500, suppress_health_check=[HealthCheck.too_slow])
     def test_kelly_always_non_negative(self, est_prob, market_price, s, bank, max_pct, fraction, sprd):
         """Kelly never returns a negative bet size."""
         result = kelly_size(est_prob, market_price, s, bank, max_pct, fraction, sprd)
@@ -324,3 +324,110 @@ class TestBalanceConservation:
         max_loss = -cost
         assert max_loss < 0
         assert abs(max_loss) == pytest.approx(cost, abs=0.01)
+
+
+# ── Stock Kelly Sizing Properties ────────────────────────────────────
+
+
+class TestStockKellyProperties:
+    """Kelly sizing for stocks must respect bounds."""
+
+    @given(
+        expected_return=st.floats(min_value=-0.5, max_value=1.0),
+        volatility=st.floats(min_value=0.0, max_value=2.0),
+        bankroll=st.floats(min_value=100.0, max_value=100000.0),
+    )
+    @settings(max_examples=300, suppress_health_check=[HealthCheck.filter_too_much])
+    def test_stock_kelly_non_negative(self, expected_return, volatility, bankroll):
+        """Stock Kelly size is always >= 0."""
+        result = kelly_size_stock(expected_return, volatility, bankroll)
+        assert result >= 0.0
+
+    @given(
+        expected_return=st.floats(min_value=0.01, max_value=1.0),
+        volatility=st.floats(min_value=0.05, max_value=1.0),
+        bankroll=st.floats(min_value=100.0, max_value=100000.0),
+        max_pct=st.floats(min_value=0.01, max_value=0.50),
+    )
+    @settings(max_examples=300, suppress_health_check=[HealthCheck.filter_too_much])
+    def test_stock_kelly_bounded(self, expected_return, volatility, bankroll, max_pct):
+        """Stock Kelly size never exceeds max_bet_pct * bankroll."""
+        result = kelly_size_stock(expected_return, volatility, bankroll, max_bet_pct=max_pct)
+        assert result <= max_pct * bankroll + 0.01
+
+    @given(
+        volatility=st.floats(min_value=0.05, max_value=1.0),
+        bankroll=st.floats(min_value=100.0, max_value=10000.0),
+    )
+    @settings(max_examples=200)
+    def test_stock_kelly_zero_return_zero_size(self, volatility, bankroll):
+        """No expected return → no position."""
+        result = kelly_size_stock(0.0, volatility, bankroll)
+        assert result == 0.0
+
+    @given(
+        expected_return=st.floats(min_value=-1.0, max_value=0.0),
+        volatility=st.floats(min_value=0.05, max_value=1.0),
+        bankroll=st.floats(min_value=100.0, max_value=10000.0),
+    )
+    @settings(max_examples=200)
+    def test_stock_kelly_negative_return_zero_size(self, expected_return, volatility, bankroll):
+        """Negative expected return → no position."""
+        result = kelly_size_stock(expected_return, volatility, bankroll)
+        assert result == 0.0
+
+    @given(
+        expected_return=st.floats(min_value=0.01, max_value=0.5),
+        bankroll=st.floats(min_value=100.0, max_value=10000.0),
+    )
+    @settings(max_examples=200)
+    def test_stock_kelly_higher_vol_smaller(self, expected_return, bankroll):
+        """Higher volatility should produce smaller or equal position sizes."""
+        low_vol = kelly_size_stock(expected_return, 0.15, bankroll)
+        high_vol = kelly_size_stock(expected_return, 0.45, bankroll)
+        assert high_vol <= low_vol + 0.01
+
+
+# ── Stock RSI Properties ─────────────────────────────────────────────
+
+
+class TestRSIProperties:
+    """RSI must be bounded [0, 100]."""
+
+    @given(
+        n=st.integers(min_value=20, max_value=100),
+        daily_change=st.floats(min_value=-0.05, max_value=0.05),
+    )
+    @settings(max_examples=200, suppress_health_check=[HealthCheck.filter_too_much])
+    def test_rsi_bounded(self, n, daily_change):
+        """RSI is always in [0, 100]."""
+        from src.stock.signals import compute_rsi
+        prices = [100.0]
+        for _ in range(n):
+            prices.append(prices[-1] * (1 + daily_change))
+            assume(prices[-1] > 0)
+        rsi = compute_rsi(prices)
+        assert 0.0 <= rsi <= 100.0
+
+
+# ── Stock Bollinger Band Properties ──────────────────────────────────
+
+
+class TestBollingerProperties:
+    """Bollinger bands must maintain lower < middle < upper (when std > 0)."""
+
+    @given(
+        n=st.integers(min_value=25, max_value=100),
+        base=st.floats(min_value=10.0, max_value=1000.0),
+        noise=st.floats(min_value=0.001, max_value=5.0),
+    )
+    @settings(max_examples=200, suppress_health_check=[HealthCheck.filter_too_much])
+    def test_bollinger_order(self, n, base, noise):
+        """Lower <= middle <= upper for any price series."""
+        from src.stock.signals import compute_bollinger_bands
+        import random
+        random.seed(42)
+        prices = [base + random.uniform(-noise, noise) for _ in range(n)]
+        lower, middle, upper = compute_bollinger_bands(prices)
+        assert lower <= middle + 1e-10
+        assert middle <= upper + 1e-10

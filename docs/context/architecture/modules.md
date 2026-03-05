@@ -124,3 +124,34 @@ The 8-step pipeline that both `run_sim.py` and `dashboard.py` delegate to. Steps
 FastAPI + Jinja2 templates. Runs `cycle_runner.run_cycle()` in a background thread. Displays: trader status, per-market analyses with expandable probability pipeline, model vote rows, signal badges, bet leaderboard, portfolio charts. Settings page for runtime config overrides.
 
 **Fixed 2026-03-03**: Force-cycle endpoint (`POST /api/cycle`) now wraps `_run_cycle` in async helper with `finally` block to always reset `sim_state["status"]` to `"waiting"` (previously left stuck as `"running"` on error).
+
+---
+
+## Stock Tier (`src/stock/`)
+
+Parallel stock market trading system. All modules in `src/stock/` package.
+
+| Module | Lines | Purpose | Key Exports | Internal Deps |
+|--------|-------|---------|-------------|---------------|
+| stock/api.py | ~200 | Alpaca HTTP client | `AlpacaAPI`, `AlpacaAPIError` | config |
+| stock/themes.py | ~180 | Macro theme definitions | `MacroTheme`, `ThemeTicker`, `get_all_theme_tickers`, `compute_composite_theme_score` | config |
+| stock/signals.py | ~400 | Log-return-space signals | `StockSignal`, `log_return_momentum`, `rsi_signal`, `bollinger_signal`, `vwap_signal`, `sector_momentum`, `volatility_regime`, `compute_all_stock_signals`, `aggregate_stock_signals` | config, models |
+| stock/scanner.py | ~250 | Stock universe scanner | `StockScanner` | stock.api, stock.themes, stock.signals, config, models |
+| stock/simulator.py | ~300 | Stock paper trading | `StockSimulator` | stock.signals, config, models, db |
+| stock/runner.py | ~200 | Stock cycle pipeline | `run_stock_cycle`, `StockCycleResult` | stock.scanner, stock.simulator, config, db |
+| stock/run_stock.py | ~40 | CLI entry point | `main()` | stock.runner, db |
+
+### stock/api.py
+httpx-based Alpaca Markets client. Paper: `paper-api.alpaca.markets`, Live: `api.alpaca.markets`. Methods: `get_account()`, `get_bars()`, `get_latest_quote()`, `get_snapshot()`, `get_assets()`. Auth via `APCA-API-KEY-ID` + `APCA-API-SECRET-KEY` headers.
+
+### stock/themes.py
+Five macro themes with curated tickers: peak_oil (XOM, CVX, OXY, HAL, DVN), china_rise (BABA, PDD, BIDU, NIO, FXI), ai_blackswan (NVDA, MSFT, GOOGL, TSM, AVGO, AMD), new_energy (NEE, FSLR, ENPH, SMR, CCJ, UUUU, OKLO), materials (FCX, ALB, MP, NEM, VALE). `compute_composite_theme_score()` sums theme_weight × ticker_conviction.
+
+### stock/signals.py
+Six signal detectors in log-return space (analogous to quant/signals.py logit-space): `log_return_momentum` (EWMA drift), `rsi_signal` (RSI oversold/overbought), `bollinger_signal` (mean reversion at band extremes), `vwap_signal` (institutional flow proxy), `sector_momentum` (relative strength vs sector), `volatility_regime` (EWMA realized vol). Same `StockSignal` dataclass pattern as `QuantSignal`.
+
+### stock/simulator.py
+Stock paper trading engine. Kelly uses `kelly_size_stock()` (expected_return / volatility²). LONG only. Risk controls: sector concentration limit, position count limit, trailing stops, drawdown pause. Commission-free (Alpaca).
+
+### stock/runner.py
+Simplified 6-step pipeline (pure quant, no LLM): scan → compute signals → score → trade → update → review. Integrated into `cycle_runner.py` when `STOCK_ENABLED=true`.

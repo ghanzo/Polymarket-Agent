@@ -23,16 +23,21 @@ _PROB_MIN = 0.005
 _PROB_MAX = 0.995
 
 
-def _extract_prices(market: Market, prefer_daily: bool = True) -> list[float]:
+def _extract_prices(market: Market, prefer_daily: bool = True,
+                    prefer_hourly: bool = False) -> list[float]:
     """Extract finite, positive prices from market price history.
 
     Args:
-        market: Market with price_history and/or price_history_daily.
+        market: Market with price_history, price_history_daily, price_history_hourly.
         prefer_daily: If True, use price_history_daily when available
                       (better for multi-day signal detection).
+        prefer_hourly: If True, prefer price_history_hourly (for intraday signals).
+                       Takes precedence over prefer_daily.
     """
     source = None
-    if prefer_daily and getattr(market, 'price_history_daily', None):
+    if prefer_hourly and getattr(market, 'price_history_hourly', None):
+        source = market.price_history_hourly
+    elif prefer_daily and getattr(market, 'price_history_daily', None):
         source = market.price_history_daily
     elif market.price_history:
         source = market.price_history
@@ -131,21 +136,24 @@ class ArbOpportunity:
         }
 
 
-def belief_volatility(market: Market, window: int = 10) -> QuantSignal | None:
+def belief_volatility(market: Market, window: int = 30) -> QuantSignal | None:
     """Rolling realized volatility in logit space.
 
-    High logit variance → market is uncertain, models can't predict direction.
-    Low logit variance → market has converged, trust edge signals.
+    High logit variance -> market is uncertain, models can't predict direction.
+    Low logit variance -> market has converged, trust edge signals.
+
+    With full daily history (200+ pts from interval=max), uses a 30-day window
+    for more reliable volatility estimation.
 
     Returns a signal that adjusts confidence:
-    - High vol → reduce confidence (negative adj)
-    - Low vol → slight boost (positive adj)
+    - High vol -> reduce confidence (negative adj)
+    - Low vol -> slight boost (positive adj)
     """
     prices = _extract_prices(market)
     if len(prices) < 3:
         return None
 
-    # Use last `window` prices
+    # Use last `window` prices (up to 30 days with full history)
     prices = prices[-window:]
     logit_prices = [_logit(p) for p in prices]
 
@@ -154,8 +162,8 @@ def belief_volatility(market: Market, window: int = 10) -> QuantSignal | None:
     if not logit_returns:
         return None
 
-    # Exponentially-weighted volatility (EWMA) — recent returns weighted more
-    # decay factor 0.94 gives ~3-day half-life on 7-day daily data
+    # Exponentially-weighted volatility (EWMA) -- recent returns weighted more
+    # decay factor 0.94 gives ~3-day half-life on daily data
     decay = 0.94
     n = len(logit_returns)
     weights = [decay ** (n - 1 - i) for i in range(n)]
@@ -172,7 +180,7 @@ def belief_volatility(market: Market, window: int = 10) -> QuantSignal | None:
     low_vol_threshold = config.QUANT_BELIEF_VOL_LOW
 
     if realized_vol > high_vol_threshold:
-        # High vol → reduce confidence
+        # High vol -> reduce confidence
         strength = min((realized_vol - high_vol_threshold) / high_vol_threshold, 1.0)
         adj = -strength * config.QUANT_MAX_SIGNAL_ADJ
         return QuantSignal(
@@ -180,10 +188,10 @@ def belief_volatility(market: Market, window: int = 10) -> QuantSignal | None:
             direction="neutral",
             strength=strength,
             confidence_adj=adj,
-            description=f"High logit vol {realized_vol:.3f} → reduce confidence",
+            description=f"High logit vol {realized_vol:.3f} (window={len(prices)}d)",
         )
     elif realized_vol < low_vol_threshold:
-        # Low vol → slight boost
+        # Low vol -> slight boost
         strength = min((low_vol_threshold - realized_vol) / low_vol_threshold, 1.0)
         adj = strength * config.QUANT_MAX_SIGNAL_ADJ * config.QUANT_VOL_BOOST_WEIGHT
         return QuantSignal(
@@ -191,52 +199,81 @@ def belief_volatility(market: Market, window: int = 10) -> QuantSignal | None:
             direction="neutral",
             strength=strength,
             confidence_adj=adj,
-            description=f"Low logit vol {realized_vol:.3f} → stable, boost confidence",
+            description=f"Low logit vol {realized_vol:.3f} (window={len(prices)}d)",
         )
 
     return None
 
 
 def logit_momentum(market: Market) -> QuantSignal | None:
-    """Momentum in logit space — more statistically valid than raw probability momentum.
+    """Momentum in logit space -- more statistically valid than raw probability momentum.
 
     Logit returns are approximately Gaussian (unlike raw probability changes which
     are bounded and skewed near 0/1). A sustained logit drift indicates genuine
     information flow, not just boundary effects.
+
+    With deep history (200+ pts), computes short-term (7d) and long-term (30d)
+    momentum. Signal is stronger when both timeframes agree.
     """
     prices = _extract_prices(market)
     if len(prices) < 4:
         return None
 
-    logit_prices = [_logit(p) for p in prices]
+    def _compute_drift(price_slice: list[float]) -> float:
+        """EWMA-weighted logit drift over a price slice."""
+        logits = [_logit(p) for p in price_slice]
+        returns = [logits[i] - logits[i - 1] for i in range(1, len(logits))]
+        n = len(returns)
+        if n == 0:
+            return 0.0
+        decay = 0.90
+        weights = [decay ** (n - 1 - i) for i in range(n)]
+        w_sum = sum(weights)
+        return sum(r * w for r, w in zip(returns, weights)) / w_sum * n
 
-    # Recency-weighted logit drift: weighted average of per-step returns
-    # where recent steps have exponentially more weight (decay=0.90)
-    returns = [logit_prices[i] - logit_prices[i - 1] for i in range(1, len(logit_prices))]
-    n = len(returns)
-    decay = 0.90
-    weights = [decay ** (n - 1 - i) for i in range(n)]
-    w_sum = sum(weights)
-    weighted_drift = sum(r * w for r, w in zip(returns, weights)) / w_sum * n
+    # Short-term momentum (last 7 days or all if < 7)
+    short_window = min(len(prices), 7)
+    short_drift = _compute_drift(prices[-short_window:])
+
+    # Long-term momentum (last 30 days if available)
+    long_drift = None
+    if len(prices) >= 15:
+        long_window = min(len(prices), 30)
+        long_drift = _compute_drift(prices[-long_window:])
+
+    # Primary drift is short-term
+    weighted_drift = short_drift
 
     threshold = config.QUANT_LOGIT_MOMENTUM_THRESHOLD
 
     if abs(weighted_drift) < threshold:
         return None
 
-    # Strength saturates at N× threshold
+    # Strength saturates at N x threshold
     strength = min(abs(weighted_drift) / (threshold * config.QUANT_SIGNAL_SATURATION_MULT), 1.0)
+
+    # Boost strength when long-term trend agrees with short-term
+    if long_drift is not None and abs(long_drift) >= threshold * 0.5:
+        if (long_drift > 0) == (short_drift > 0):
+            # Both agree -- boost strength by 20%
+            strength = min(1.0, strength * 1.2)
+
     direction = "bullish" if weighted_drift > 0 else "bearish"
     adj = strength * config.QUANT_MAX_SIGNAL_ADJ
     if direction == "bearish":
         adj = -adj
+
+    lt_str = ""
+    if long_drift is not None:
+        agree = "agrees" if (long_drift > 0) == (short_drift > 0) else "disagrees"
+        lt_str = f", 30d {agree} ({long_drift:+.2f})"
 
     return QuantSignal(
         name="logit_momentum",
         direction=direction,
         strength=strength,
         confidence_adj=adj,
-        description=f"Weighted logit drift {weighted_drift:+.3f} ({prices[0]:.3f} → {prices[-1]:.3f})",
+        description=f"7d drift {short_drift:+.3f}{lt_str} ({prices[-short_window]:.3f}->{prices[-1]:.3f})",
     )
 
 
@@ -245,14 +282,21 @@ def logit_mean_reversion(market: Market) -> QuantSignal | None:
 
     Detects when the current logit-price has deviated significantly from the
     rolling mean, suggesting a reversion is likely.
+
+    With deep history (200+ pts), computes a more robust mean from the full
+    price series, making deviation detection more reliable. Uses last 30 days
+    for the rolling mean to avoid being anchored to stale initial prices.
     """
     prices = _extract_prices(market)
     if len(prices) < 5:
         return None
 
-    logit_prices = [_logit(p) for p in prices]
+    # Use up to 30 days for rolling mean (avoids anchoring to ancient prices)
+    mean_window = min(len(prices), 30)
+    mean_prices = prices[-mean_window:]
+    logit_prices = [_logit(p) for p in mean_prices]
     logit_mean = sum(logit_prices) / len(logit_prices)
-    current_logit = logit_prices[-1]
+    current_logit = _logit(prices[-1])
     deviation = current_logit - logit_mean
 
     threshold = config.QUANT_LOGIT_REVERSION_THRESHOLD
@@ -261,20 +305,21 @@ def logit_mean_reversion(market: Market) -> QuantSignal | None:
         return None
 
     # Signal direction: expect price to revert toward mean
-    # If current is ABOVE mean → expect decline → bearish
-    # If current is BELOW mean → expect rise → bullish
+    # If current is ABOVE mean -> expect decline -> bearish
+    # If current is BELOW mean -> expect rise -> bullish
     strength = min(abs(deviation) / (threshold * config.QUANT_SIGNAL_SATURATION_MULT), 1.0)
     direction = "bearish" if deviation > 0 else "bullish"
     adj = strength * config.QUANT_MAX_SIGNAL_ADJ * config.QUANT_REVERSION_WEIGHT
     if direction == "bearish":
         adj = -adj
 
+    mean_prob = 1.0 / (1.0 + math.exp(-logit_mean))
     return QuantSignal(
         name="logit_mean_reversion",
         direction=direction,
         strength=strength,
         confidence_adj=adj,
-        description=f"Logit deviation {deviation:+.3f} from mean {logit_mean:.3f}",
+        description=f"Logit dev {deviation:+.3f} from {mean_window}d mean ({mean_prob:.3f})",
     )
 
 
@@ -520,6 +565,56 @@ def _check_negrisk_arb(market: Market) -> QuantSignal | None:
     return signal
 
 
+def hourly_momentum(market: Market) -> QuantSignal | None:
+    """Short-term momentum from hourly price data (last 24-48h).
+
+    Uses the hourly price history (up to 669 pts over 30 days) to detect
+    intraday trends that daily data misses. Focuses on the last 48 hours
+    to capture recent price action.
+
+    Only fires when hourly trend is strong and sustained.
+    """
+    prices = _extract_prices(market, prefer_daily=False, prefer_hourly=True)
+    if len(prices) < 12:  # Need at least 12 hours
+        return None
+
+    # Use last 48 hours (48 points at hourly resolution)
+    window = min(len(prices), 48)
+    recent = prices[-window:]
+    logits = [_logit(p) for p in recent]
+
+    # EWMA-weighted drift over the window
+    returns = [logits[i] - logits[i - 1] for i in range(1, len(logits))]
+    n = len(returns)
+    decay = 0.95  # Slower decay for hourly (more data points)
+    weights = [decay ** (n - 1 - i) for i in range(n)]
+    w_sum = sum(weights)
+    weighted_drift = sum(r * w for r, w in zip(returns, weights)) / w_sum * n
+
+    # Higher threshold for hourly -- intraday noise is larger
+    threshold = config.QUANT_LOGIT_MOMENTUM_THRESHOLD * 0.5  # 0.15 in logit units
+
+    if abs(weighted_drift) < threshold:
+        return None
+
+    strength = min(abs(weighted_drift) / (threshold * config.QUANT_SIGNAL_SATURATION_MULT), 1.0)
+    # Scale down hourly signal -- it's noisier than daily
+    strength *= 0.7
+
+    direction = "bullish" if weighted_drift > 0 else "bearish"
+    adj = strength * config.QUANT_MAX_SIGNAL_ADJ * 0.6  # Reduced weight vs daily
+    if direction == "bearish":
+        adj = -adj
+
+    return QuantSignal(
+        name="hourly_momentum",
+        direction=direction,
+        strength=strength,
+        confidence_adj=adj,
+        description=f"48h drift {weighted_drift:+.3f} ({recent[0]:.3f}->{recent[-1]:.3f}, {window}h)",
+    )
+
+
 def compute_all_quant_signals(
     market: Market,
     estimated_prob: float | None = None,
@@ -531,6 +626,7 @@ def compute_all_quant_signals(
         belief_volatility,
         logit_momentum,
         logit_mean_reversion,
+        hourly_momentum,
         liquidity_adjusted_edge,
         structural_arb,
     ]

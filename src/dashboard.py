@@ -19,7 +19,7 @@ from fastapi.templating import Jinja2Templates
 
 from src.analyzer import cost_tracker
 from src.config import config
-from src.models import TRADER_IDS
+from src.models import TRADER_IDS, STOCK_TRADER_IDS, ALL_TRADER_IDS
 from src import db
 
 logger = logging.getLogger("dashboard")
@@ -116,7 +116,7 @@ def _run_cycle():
     logger.info("=== Cycle %d starting ===", cycle_num)
 
     # Initialize all trader states for this cycle
-    for tid in TRADER_IDS:
+    for tid in ALL_TRADER_IDS:
         _init_trader_state(tid, paused)
 
     def _on_status(tid, status, **kwargs):
@@ -156,7 +156,7 @@ def _run_cycle():
                 sim_state["traders"][tid]["errors"] = sim_state["traders"][tid].get("errors", 0) + err_count
 
     # Save portfolio snapshots for charts
-    for tid in TRADER_IDS:
+    for tid in ALL_TRADER_IDS:
         try:
             p = db.get_portfolio(tid)
             db.save_portfolio_snapshot(
@@ -265,6 +265,14 @@ async def dashboard(request: Request):
         else:
             bet._slippage_display = None
 
+    # Fetch stock data
+    stock_portfolios = [p for p in portfolios if p.trader_id in STOCK_TRADER_IDS]
+    # Hide inactive LLM agents from Polymarket leaderboard
+    hidden_traders = {"claude", "gemini"}
+    poly_portfolios = [p for p in portfolios if p.trader_id not in STOCK_TRADER_IDS and p.trader_id not in hidden_traders]
+    stock_bets = [b for b in open_bets if b.trader_id in STOCK_TRADER_IDS]
+    poly_open_bets = [b for b in open_bets if b.trader_id not in STOCK_TRADER_IDS]
+
     # Aggregate stats
     total_value = sum(p.portfolio_value for p in portfolios)
     total_pnl = sum(p.total_pnl for p in portfolios)
@@ -272,7 +280,7 @@ async def dashboard(request: Request):
     # Build per-trader detail for status indicators
     paused_set = set(config.PAUSED_TRADERS)
     trader_details = {}
-    for tid in TRADER_IDS:
+    for tid in ALL_TRADER_IDS:
         trader_state = sim_state["traders"].get(tid, {})
         trader_details[tid] = {
             "status": "paused" if tid in paused_set else trader_state.get("status", "idle"),
@@ -287,8 +295,8 @@ async def dashboard(request: Request):
 
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
-        "portfolios": portfolios,
-        "open_bets": open_bets,
+        "portfolios": poly_portfolios,
+        "open_bets": poly_open_bets,
         "closed_bets": closed_bets,
         "analyses": analyses,
         "sim": sim_state,
@@ -297,6 +305,9 @@ async def dashboard(request: Request):
         "trader_details": trader_details,
         "reviews": reviews,
         "max_position_days": config.SIM_MAX_POSITION_DAYS,
+        "stock_portfolios": stock_portfolios,
+        "stock_bets": stock_bets,
+        "stock_enabled": config.STOCK_ENABLED,
         "config": {
             "starting_balance": config.SIM_STARTING_BALANCE,
             "max_bet_pct": config.SIM_MAX_BET_PCT,
@@ -486,3 +497,63 @@ async def close_all_positions():
         db.close_bet(bet.id, exit_price)
         closed += 1
     return JSONResponse({"ok": True, "closed": closed})
+
+
+# --- Stock Market Endpoints ---
+
+@app.get("/api/stock/portfolios")
+async def stock_portfolios():
+    """Get stock market portfolios."""
+    try:
+        portfolios = db.get_portfolios_by_system("stock")
+        return JSONResponse([{
+            "trader_id": p.trader_id,
+            "balance": p.balance,
+            "portfolio_value": p.portfolio_value,
+            "realized_pnl": p.realized_pnl,
+            "unrealized_pnl": p.unrealized_pnl,
+            "total_bets": p.total_bets,
+            "wins": p.wins,
+            "losses": p.losses,
+            "win_rate": p.win_rate,
+            "roi": p.roi,
+        } for p in portfolios])
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/stock/bets")
+async def stock_bets():
+    """Get stock market bets."""
+    try:
+        bets = db.get_open_bets_by_system("stock")
+        return JSONResponse([{
+            "id": b.id,
+            "trader_id": b.trader_id,
+            "symbol": b.token_id,
+            "side": b.side.value,
+            "amount": b.amount,
+            "entry_price": b.entry_price,
+            "current_price": b.current_price,
+            "shares": b.shares,
+            "pnl": b.unrealized_pnl,
+            "placed_at": b.placed_at.isoformat() if b.placed_at else None,
+        } for b in bets])
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/stock/status")
+async def stock_status():
+    """Get stock market system status."""
+    try:
+        portfolios = db.get_portfolios_by_system("stock")
+        open_bets = db.get_open_bets_by_system("stock")
+        return JSONResponse({
+            "enabled": config.STOCK_ENABLED,
+            "portfolios": len(portfolios),
+            "open_positions": len(open_bets),
+            "total_value": sum(p.portfolio_value for p in portfolios),
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)

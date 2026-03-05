@@ -322,11 +322,21 @@ class MarketScanner:
         except (APIError, ValueError, TypeError):
             pass
 
-        # Daily history for quant multi-day signals (fidelity=1440 means 1 point per day)
+        # Full daily history for quant signals (interval=max returns entire market lifetime)
+        # fidelity=1440 = 1 point per day. Yields 200+ points for older markets.
         try:
-            daily = self.cli.price_history(token, interval="1w", fidelity=1440)
+            daily = self.cli.price_history(token, interval="max", fidelity=1440)
             if isinstance(daily, list) and daily:
                 market.price_history_daily = daily
+        except (APIError, ValueError, TypeError):
+            pass
+
+        # Hourly history (last 30 days) for intraday signal resolution
+        # fidelity=60 = 1 point per hour. Yields ~669 points.
+        try:
+            hourly = self.cli.price_history(token, interval="1m", fidelity=60)
+            if isinstance(hourly, list) and hourly:
+                market.price_history_hourly = hourly
         except (APIError, ValueError, TypeError):
             pass
 

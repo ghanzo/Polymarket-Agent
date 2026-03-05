@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Polymarket Paper Trading</title>
+    <title>Paper Trading Dashboard</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -177,6 +177,7 @@
         .tag-gemini { background: #4285f422; color: #4285f4; }
         .tag-ensemble { background: #fbbf2422; color: #fbbf24; }
         .tag-quant { background: #10b98122; color: #10b981; }
+        .tag-stock_quant { background: #f59e0b22; color: #f59e0b; }
 
         /* Analysis log */
         .analysis-item {
@@ -284,6 +285,7 @@
         .trader-pill.active.tag-gemini { background: #4285f422; color: #4285f4; border-color: #4285f4; }
         .trader-pill.active.tag-ensemble { background: #fbbf2422; color: #fbbf24; border-color: #fbbf24; }
         .trader-pill.active.tag-quant { background: #10b98122; color: #10b981; border-color: #10b981; }
+        .trader-pill.active.tag-stock_quant { background: #f59e0b22; color: #f59e0b; border-color: #f59e0b; }
         .setting-saved {
             color: #4ade80; font-size: 11px; opacity: 0; transition: opacity 0.3s;
             margin-left: 8px;
@@ -476,7 +478,7 @@
 </head>
 <body>
     <div class="header">
-        <h1><span>POLY</span>MARKET Paper Trading</h1>
+        <h1><span>POLY</span>MARKET + <span style="color: #f59e0b;">STOCKS</span> Paper Trading</h1>
         <div class="header-right">
             <button class="btn-action btn-cycle" id="btnRunCycle" onclick="runCycle()">Run Cycle</button>
             <a href="/backtest" style="color: #7c5cfc; text-decoration: none; font-size: 12px; padding: 4px 12px; border: 1px solid #7c5cfc; border-radius: 8px;">Backtest</a>
@@ -492,6 +494,7 @@
             <span>Sizing: Quarter-Kelly</span>
             <span>Max bet: {{ "%.0f"|format(config.max_bet_pct * 100) }}%</span>
             <span>AI spend: ${{ "%.2f"|format(ai_costs.daily_total) }} / ${{ "%.2f"|format(config.ai_budget_hard_cap) }}</span>
+            {% if stock_enabled %}<span style="color: #f59e0b;">Stocks: ON</span>{% endif %}
             {% if sim.last_run %}<span>Last run: <span class="relative-time" data-ts="{{ sim.last_run }}"></span></span>{% endif %}
             {% if sim.last_error %}<span style="color: #f87171;">Error: {{ sim.last_error[:60] }}</span>{% endif %}
         </div>
@@ -506,7 +509,7 @@
                 <div class="setting-item">
                     <label>Active Traders</label>
                     <div class="trader-toggles">
-                        {% for tid in ["claude", "grok", "gemini", "ensemble", "quant"] %}
+                        {% for tid in ["grok", "ensemble", "quant", "stock_quant"] %}
                         <button class="trader-pill tag-{{ tid }} {{ 'active' if tid not in config.paused_traders else '' }}"
                                 data-trader="{{ tid }}" onclick="toggleTrader('{{ tid }}', this)">
                             {{ tid }}
@@ -730,7 +733,7 @@
 
         <!-- LEADERBOARD -->
         <div class="leaderboard">
-            <h2>Model Leaderboard</h2>
+            <h2>Polymarket Leaderboard</h2>
             <div class="leaderboard-grid">
                 {% for p in portfolios %}
                 {% set ts = trader_details.get(p.trader_id, {}) %}
@@ -742,7 +745,7 @@
                             {% if p.trader_id == 'claude' %}Claude Opus 4
                             {% elif p.trader_id == 'grok' %}Grok 4.1 Reasoning
                             {% elif p.trader_id == 'gemini' %}Gemini 2.5 Pro
-                            {% elif p.trader_id == 'ensemble' %}All Models Combined
+                            {% elif p.trader_id == 'ensemble' %}Weighted Vote + Market Consensus
                             {% elif p.trader_id == 'quant' %}Logit-Space Signals
                             {% endif %}
                         </div>
@@ -800,6 +803,95 @@
                 {% endfor %}
             </div>
         </div>
+
+        <!-- STOCK MARKET LEADERBOARD -->
+        {% if stock_portfolios %}
+        <div class="leaderboard" style="border-color: #f59e0b44;">
+            <h2 style="color: #f59e0b;">Stock Market</h2>
+            <div class="leaderboard-grid">
+                {% for p in stock_portfolios %}
+                {% set ts = trader_details.get(p.trader_id, {}) %}
+                <div class="trader-card" style="border-color: #f59e0b44;">
+                    <div class="trader-name">
+                        {{ p.trader_id }}
+                        <div class="model-sub">Log-Return Signals + Macro Themes</div>
+                    </div>
+                    <div class="agent-status">
+                        <span class="status-dot {{ ts.get('status', 'idle') }}"></span>
+                        <span class="status-label {{ ts.get('status', 'idle') }}">{{ ts.get('status', 'idle') }}</span>
+                    </div>
+                    <div class="trader-stats">
+                        <div class="trader-stat">
+                            <div class="label">Portfolio Value</div>
+                            <div class="value">${{ "%.2f"|format(p.portfolio_value) }}</div>
+                        </div>
+                        <div class="trader-stat">
+                            <div class="label">Total P&L</div>
+                            <div class="value {{ 'positive' if p.total_pnl >= 0 else 'negative' }}">
+                                ${{ "%+.2f"|format(p.total_pnl) }}
+                            </div>
+                        </div>
+                        <div class="trader-stat">
+                            <div class="label">Win Rate</div>
+                            <div class="value sm">{{ "%.0f"|format(p.win_rate * 100) }}%
+                                <span style="font-size: 11px; color: #666;">({{ p.wins }}W/{{ p.losses }}L)</span>
+                            </div>
+                        </div>
+                        <div class="trader-stat">
+                            <div class="label">ROI</div>
+                            <div class="value sm {{ 'positive' if p.roi >= 0 else 'negative' }}">
+                                {{ "%+.1f"|format(p.roi) }}%
+                            </div>
+                        </div>
+                    </div>
+                    <div class="roi-bar">
+                        {% set bar_pct = [[(p.roi + 50), 0]|max, 100]|min %}
+                        <div class="roi-bar-fill" style="width: {{ bar_pct }}%; background: {{ '#4ade80' if p.roi >= 0 else '#f87171' }};"></div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+
+            <!-- Stock Positions -->
+            {% if stock_bets %}
+            <div style="margin-top: 20px;">
+                <h3 style="font-size: 12px; color: #666; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px;">Open Stock Positions</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Side</th>
+                            <th>Amount</th>
+                            <th>Entry</th>
+                            <th>Current</th>
+                            <th>P&L</th>
+                            <th>Age</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {% for bet in stock_bets %}
+                        <tr>
+                            <td style="font-weight: 700; color: #f59e0b;">{{ bet.token_id }}</td>
+                            <td class="side-{{ bet.side.value|lower }}">{{ "LONG" if bet.side.value == "YES" else "SHORT" }}</td>
+                            <td>${{ "%.2f"|format(bet.amount) }}</td>
+                            <td>${{ "%.2f"|format(bet.entry_price) }}</td>
+                            <td>${{ "%.2f"|format(bet.current_price or 0) }}</td>
+                            <td class="{{ 'positive' if bet.unrealized_pnl >= 0 else 'negative' }}">
+                                ${{ "%+.2f"|format(bet.unrealized_pnl) }}
+                            </td>
+                            <td>{{ "%.0f"|format(bet._age_days) }}d</td>
+                            <td><button class="btn-close-pos" title="Close position" onclick="closePosition({{ bet.id }}, this)">&times;</button></td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state" style="padding: 20px;">No open stock positions. Waiting for signals...</div>
+            {% endif %}
+        </div>
+        {% endif %}
 
         <!-- PERFORMANCE REVIEW -->
         {% if reviews %}
@@ -1095,7 +1187,8 @@
             grok: '#f4364c',
             gemini: '#4285f4',
             ensemble: '#fbbf24',
-            quant: '#10b981'
+            quant: '#10b981',
+            stock_quant: '#f59e0b'
         };
 
         async function loadChart() {

@@ -152,8 +152,8 @@ class Config:
 
     # Quant agent
     QUANT_AGENT_ENABLED: bool = os.getenv("QUANT_AGENT_ENABLED", "true").lower() == "true"
-    QUANT_MIN_CONFIDENCE: float = float(os.getenv("QUANT_MIN_CONFIDENCE", "0.55"))
-    QUANT_MIN_EDGE: float = float(os.getenv("QUANT_MIN_EDGE", "0.03"))
+    QUANT_MIN_CONFIDENCE: float = float(os.getenv("QUANT_MIN_CONFIDENCE", "0.60"))
+    QUANT_MIN_EDGE: float = float(os.getenv("QUANT_MIN_EDGE", "0.05"))
     QUANT_MAX_SIGNAL_ADJ: float = float(os.getenv("QUANT_MAX_SIGNAL_ADJ", "0.08"))
     QUANT_BELIEF_VOL_HIGH: float = float(os.getenv("QUANT_BELIEF_VOL_HIGH", "0.5"))
     QUANT_BELIEF_VOL_LOW: float = float(os.getenv("QUANT_BELIEF_VOL_LOW", "0.15"))
@@ -162,9 +162,10 @@ class Config:
     QUANT_MIN_EDGE_ZSCORE: float = float(os.getenv("QUANT_MIN_EDGE_ZSCORE", "1.5"))
     QUANT_ARB_MIN_SPREAD: float = float(os.getenv("QUANT_ARB_MIN_SPREAD", "0.01"))
     QUANT_MIN_SIGNALS: int = int(os.getenv("QUANT_MIN_SIGNALS", "2"))
+    QUANT_MIN_DIRECTIONAL_SIGNALS: int = int(os.getenv("QUANT_MIN_DIRECTIONAL_SIGNALS", "2"))
     # Extracted signal tuning parameters
     QUANT_VOL_BOOST_WEIGHT: float = float(os.getenv("QUANT_VOL_BOOST_WEIGHT", "0.5"))
-    QUANT_SIGNAL_SATURATION_MULT: float = float(os.getenv("QUANT_SIGNAL_SATURATION_MULT", "3"))
+    QUANT_SIGNAL_SATURATION_MULT: float = float(os.getenv("QUANT_SIGNAL_SATURATION_MULT", "5"))
     QUANT_REVERSION_WEIGHT: float = float(os.getenv("QUANT_REVERSION_WEIGHT", "0.7"))
     QUANT_LIQUIDITY_WEIGHT: float = float(os.getenv("QUANT_LIQUIDITY_WEIGHT", "0.5"))
     QUANT_IMBALANCE_THRESHOLD: float = float(os.getenv("QUANT_IMBALANCE_THRESHOLD", "0.15"))
@@ -178,10 +179,68 @@ class Config:
     QUANT_MAX_MARKETS_PER_EVENT: int = int(os.getenv("QUANT_MAX_MARKETS_PER_EVENT", "20"))
     QUANT_MAX_RELATED_MARKETS: int = int(os.getenv("QUANT_MAX_RELATED_MARKETS", "50"))
 
+    # Particle Filter (Q2) — stateful probability tracking via Sequential Monte Carlo
+    USE_PARTICLE_FILTER: bool = os.getenv("USE_PARTICLE_FILTER", "false").lower() == "true"
+    PF_NUM_PARTICLES: int = int(os.getenv("PF_NUM_PARTICLES", "100"))
+    PF_SIGMA_OBS: float = float(os.getenv("PF_SIGMA_OBS", "0.3"))
+    PF_DRIFT_WEIGHT: float = float(os.getenv("PF_DRIFT_WEIGHT", "0.1"))
+    PF_RESAMPLE_THRESHOLD: float = float(os.getenv("PF_RESAMPLE_THRESHOLD", "0.5"))
+    PF_TTL_HOURS: float = float(os.getenv("PF_TTL_HOURS", "168"))  # 1 week
+    PF_INIT_SPREAD: float = float(os.getenv("PF_INIT_SPREAD", "0.5"))  # logit-space std dev
+
+    # Live trading (real money via CLOB API)
+    LIVE_TRADING_ENABLED: bool = os.getenv("LIVE_TRADING_ENABLED", "false").lower() == "true"
+    LIVE_TRADER_ID: str = os.getenv("LIVE_TRADER_ID", "grok")  # Which paper trader to mirror
+    LIVE_SCALE_FACTOR: float = float(os.getenv("LIVE_SCALE_FACTOR", "0.01"))  # Paper->real size multiplier
+    LIVE_MAX_BET_USD: float = float(os.getenv("LIVE_MAX_BET_USD", "5.0"))  # Hard cap per trade
+    LIVE_MAX_DAILY_LOSS_USD: float = float(os.getenv("LIVE_MAX_DAILY_LOSS_USD", "20.0"))
+    LIVE_REQUIRE_CONFIRM: bool = os.getenv("LIVE_REQUIRE_CONFIRM", "true").lower() == "true"
+    CLOB_API_KEY: str | None = os.getenv("CLOB_API_KEY") or None
+    CLOB_API_SECRET: str | None = os.getenv("CLOB_API_SECRET") or None
+    CLOB_API_PASSPHRASE: str | None = os.getenv("CLOB_API_PASSPHRASE") or None
+    CLOB_CHAIN_ID: int = int(os.getenv("CLOB_CHAIN_ID", "137"))  # 137 = Polygon mainnet
+
     # Hybrid LLM+Quant — quant signals validate/adjust ensemble recommendations
     USE_HYBRID_QUANT: bool = os.getenv("USE_HYBRID_QUANT", "true").lower() == "true"
     HYBRID_AGREEMENT_BOOST: float = float(os.getenv("HYBRID_AGREEMENT_BOOST", "0.10"))
     HYBRID_DISAGREEMENT_PENALTY: float = float(os.getenv("HYBRID_DISAGREEMENT_PENALTY", "0.15"))
+
+    # --- Stock Market (Alpaca) ---
+    ALPACA_API_KEY: str | None = os.getenv("ALPACA_API_KEY") or None
+    ALPACA_SECRET_KEY: str | None = os.getenv("ALPACA_SECRET_KEY") or None
+    ALPACA_PAPER: bool = os.getenv("ALPACA_PAPER", "true").lower() == "true"
+
+    # Stock simulation
+    STOCK_ENABLED: bool = os.getenv("STOCK_ENABLED", "false").lower() == "true"
+    STOCK_STARTING_BALANCE: float = float(os.getenv("STOCK_STARTING_BALANCE", "1000"))
+    STOCK_MAX_POSITION_PCT: float = float(os.getenv("STOCK_MAX_POSITION_PCT", "0.10"))
+    STOCK_KELLY_FRACTION: float = float(os.getenv("STOCK_KELLY_FRACTION", "0.25"))
+    STOCK_MIN_EDGE: float = float(os.getenv("STOCK_MIN_EDGE", "0.02"))
+    STOCK_STOP_LOSS: float = float(os.getenv("STOCK_STOP_LOSS", "0.05"))
+    STOCK_TAKE_PROFIT: float = float(os.getenv("STOCK_TAKE_PROFIT", "0.15"))
+    STOCK_FEE_RATE: float = float(os.getenv("STOCK_FEE_RATE", "0.0"))
+    STOCK_MAX_DRAWDOWN: float = float(os.getenv("STOCK_MAX_DRAWDOWN", "0.15"))
+    STOCK_MAX_DAILY_LOSS: float = float(os.getenv("STOCK_MAX_DAILY_LOSS", "0.05"))
+    STOCK_CYCLE_INTERVAL: int = int(os.getenv("STOCK_CYCLE_INTERVAL", "900"))
+    STOCK_MAX_POSITIONS: int = int(os.getenv("STOCK_MAX_POSITIONS", "20"))
+    STOCK_MAX_SECTOR_PCT: float = float(os.getenv("STOCK_MAX_SECTOR_PCT", "0.30"))
+    STOCK_MIN_CONFIDENCE: float = float(os.getenv("STOCK_MIN_CONFIDENCE", "0.55"))
+
+    # Theme weights (user's macro conviction — must sum to ~1.0)
+    STOCK_THEME_PEAK_OIL: float = float(os.getenv("STOCK_THEME_PEAK_OIL", "0.20"))
+    STOCK_THEME_CHINA_RISE: float = float(os.getenv("STOCK_THEME_CHINA_RISE", "0.20"))
+    STOCK_THEME_AI_BLACKSWAN: float = float(os.getenv("STOCK_THEME_AI_BLACKSWAN", "0.25"))
+    STOCK_THEME_NEW_ENERGY: float = float(os.getenv("STOCK_THEME_NEW_ENERGY", "0.20"))
+    STOCK_THEME_MATERIALS: float = float(os.getenv("STOCK_THEME_MATERIALS", "0.15"))
+
+    # Stock signal tuning
+    STOCK_RSI_PERIOD: int = int(os.getenv("STOCK_RSI_PERIOD", "14"))
+    STOCK_RSI_OVERSOLD: float = float(os.getenv("STOCK_RSI_OVERSOLD", "30"))
+    STOCK_RSI_OVERBOUGHT: float = float(os.getenv("STOCK_RSI_OVERBOUGHT", "70"))
+    STOCK_BOLLINGER_PERIOD: int = int(os.getenv("STOCK_BOLLINGER_PERIOD", "20"))
+    STOCK_BOLLINGER_STD: float = float(os.getenv("STOCK_BOLLINGER_STD", "2.0"))
+    STOCK_MOMENTUM_WINDOW: int = int(os.getenv("STOCK_MOMENTUM_WINDOW", "20"))
+    STOCK_VWAP_DEVIATION: float = float(os.getenv("STOCK_VWAP_DEVIATION", "0.02"))
 
     # AI Budget (daily caps in USD)
     AI_BUDGET_SOFT_CAP: float = float(os.getenv("AI_BUDGET_SOFT_CAP", "10.0"))

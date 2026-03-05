@@ -10,23 +10,27 @@
 ┌─────────────────────────────────────────────────────┐
 │                  ORCHESTRATION                       │
 │  cycle_runner.py  run_sim.py  dashboard.py          │
-│  (9-step pipeline, CLI entry, web UI)               │
+│  stock/runner.py  stock/run_stock.py                │
+│  (pipelines, CLI entries, web UI)                   │
 ├─────────────────────────────────────────────────────┤
 │                    TRADING                           │
 │  simulator.py  backtester.py                        │
-│  (paper trading engine, walk-forward backtesting)   │
+│  stock/simulator.py                                 │
+│  (paper trading engines, walk-forward backtesting)  │
 ├─────────────────────────────────────────────────────┤
 │                   ANALYSIS                           │
 │  analyzer.py  learning.py  strategies.py            │
 │  prescreener.py  web_search.py  prompts.py          │
 │  cost_tracker.py                                    │
 │  quant/signals.py  quant/agent.py                   │
+│  stock/signals.py  stock/themes.py                  │
 │  (AI models, ML pre-screening, quant signals,       │
-│   calibration)                                      │
+│   stock signals, thematic investing)                │
 ├─────────────────────────────────────────────────────┤
 │                 INFRASTRUCTURE                       │
 │  api.py  scanner.py  slippage.py  db.py             │
-│  (HTTP client, market discovery, order book, Postgres)│
+│  stock/api.py  stock/scanner.py                     │
+│  (HTTP clients, market discovery, order book, DB)   │
 ├─────────────────────────────────────────────────────┤
 │                  FOUNDATION                          │
 │  config.py  models.py  cli.py  main.py              │
@@ -116,6 +120,14 @@ quant.signals ←── quant.agent ←── cycle_runner
 
 cycle_runner ←── run_sim
              ←── dashboard
+
+stock.api ←── stock.scanner ←── stock.runner
+stock.themes ←── stock.scanner
+             ←── stock.signals
+stock.signals ←── stock.scanner
+              ←── stock.simulator
+stock.simulator ←── stock.runner ←── stock.run_stock
+                                ←── cycle_runner (if STOCK_ENABLED)
 ```
 
 ---
@@ -145,6 +157,7 @@ These modules carry the most risk and deserve the most careful testing:
 | Gemini API | HTTPS | analyzer.py | Market analysis |
 | Grok API | HTTPS | analyzer.py | Market analysis (primary) |
 | Brave Search API | HTTPS | web_search.py | News/context enrichment |
+| Alpaca Markets API | HTTPS | stock/api.py | Stock bars, quotes, assets |
 | PostgreSQL 16 | TCP 5432 | db.py | All persistent state |
 
 ---
@@ -156,3 +169,4 @@ These modules carry the most risk and deserve the most careful testing:
 - **Backward-compatible module split**: analyzer.py was 1,321 lines, split into 4 modules with re-exports preserving all existing imports.
 - **Thread-safe by design**: CostTracker uses threading locks, DB uses connection pooling, scanner uses ThreadPoolExecutor.
 - **JSONB transparency**: Analysis extras column stores full decision pipeline metadata (probability stages, model votes, signals, slippage).
+- **Dual-market architecture**: `src/stock/` package mirrors Polymarket patterns (api, scanner, signals, simulator, runner) but for equities via Alpaca. Both pipelines share the same DB, models, and dashboard. Feature-flagged via `STOCK_ENABLED`.

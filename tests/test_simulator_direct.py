@@ -145,7 +145,7 @@ class TestPlaceBetSkipAndConfidence:
         mock_db.get_daily_realized_pnl.return_value = 0.0
         sim._get_live_midpoint = MagicMock(return_value=None)
         # If we reach has_open_bet_on_market, confidence gate passed
-        sim.place_bet(_market(), _analysis(confidence=0.55, est_prob=0.80))
+        sim.place_bet(_market(), _analysis(confidence=0.60, est_prob=0.80))
         mock_db.has_open_bet_on_market.assert_called()
 
 

@@ -39,10 +39,10 @@ Test strategy, known bugs, and lessons from past failures. Read before writing t
 
 **How does it work?**
 
-Module map, data flow, and dependency structure. Read when onboarding or before touching unfamiliar code.
+Module map, data flow, and dependency structure. Read when onboarding or before touching unfamiliar code. Architecture docs cover both Polymarket and stock market systems.
 
-- [System Overview](architecture/overview.md) — Tier diagram, 8-step cycle, dependency map
-- [Module Reference](architecture/modules.md) — Per-module descriptions, exports, and dependencies
+- [System Overview](architecture/overview.md) — Tier diagram, dual-pipeline data flow, dependency map
+- [Module Reference](architecture/modules.md) — Per-module descriptions (including `src/stock/` package), exports, and dependencies
 
 ## Reviews (Point-in-Time Snapshots)
 

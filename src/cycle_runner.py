@@ -184,6 +184,24 @@ def run_cycle(
         # 8-9. Place bets, update positions, performance review, leaderboard
         _place_bets_and_review(cli, all_analyses, result, cycle_number, _status)
 
+        # Stock market cycle (if enabled)
+        if config.STOCK_ENABLED:
+            try:
+                from src.stock.runner import run_stock_cycle
+                logger.info("[STOCK] Running stock cycle...")
+                stock_result = run_stock_cycle(
+                    cycle_number=cycle_number or 0,
+                    on_status=_status,
+                )
+                result.bets_by_trader["stock_quant"] = stock_result.trades_placed
+                logger.info(
+                    "[STOCK] scanned=%d signals=%d trades=%d closed=%d",
+                    stock_result.stocks_scanned, stock_result.signals_computed,
+                    stock_result.trades_placed, stock_result.positions_closed,
+                )
+            except Exception as e:
+                logger.error("[STOCK] Stock cycle failed: %s", e)
+
         # End-of-cycle metrics
         latency = cost_tracker.latency_stats()
         costs = cost_tracker.daily_by_model()
@@ -357,6 +375,16 @@ def _apply_hybrid_quant(ensemble_analysis: Analysis, quant_analysis: Analysis | 
 
 def _place_bets_and_review(cli, all_analyses, result, cycle_number, status_cb):
     """Place bets, update positions, run performance reviews, and print leaderboard."""
+    # Initialize live trader if enabled
+    live_trader = None
+    if config.LIVE_TRADING_ENABLED:
+        try:
+            from src.live_trader import LiveTrader
+            live_trader = LiveTrader()
+            logger.info("[live] Live trading enabled, mirroring %s", config.LIVE_TRADER_ID)
+        except Exception as e:
+            logger.error("[live] Failed to initialize live trader: %s", e)
+
     logger.info("[8/9] Placing bets and updating positions...")
     for tid, market_analyses in all_analyses.items():
         status_cb(tid, "betting")
@@ -371,6 +399,19 @@ def _place_bets_and_review(cli, all_analyses, result, cycle_number, status_cb):
                 logger.info("[%s] BET $%.2f %s @ %.3f — %s",
                             tid, bet.amount, bet.side.value, bet.entry_price,
                             market.question[:45])
+
+                # Mirror to live if this is the configured trader
+                if live_trader and tid == config.LIVE_TRADER_ID:
+                    try:
+                        live_result = live_trader.mirror_bet(bet)
+                        if live_result:
+                            live_result["paper_bet_id"] = bet.id
+                            db.save_live_bet(live_result)
+                            logger.info("[live] Mirrored: $%.2f real (paper=$%.2f) order=%s",
+                                        live_result["live_amount"], bet.amount,
+                                        live_result["order_id"][:16])
+                    except Exception as e:
+                        logger.error("[live] Mirror failed for bet %s: %s", bet.id, e)
 
         status_cb(tid, "updating")
         sim.update_positions()
@@ -399,3 +440,14 @@ def _place_bets_and_review(cli, all_analyses, result, cycle_number, status_cb):
     for p in db.get_all_portfolios():
         logger.info("  %-12s $%9.2f  P&L $%+9.2f  %d bets  %.0f%% win",
                      p.trader_id, p.portfolio_value, p.total_pnl, p.total_bets, p.win_rate * 100)
+    # Stock leaderboard
+    if config.STOCK_ENABLED:
+        try:
+            stock_portfolios = db.get_portfolios_by_system("stock")
+            if stock_portfolios:
+                logger.info("STOCK LEADERBOARD")
+                for p in stock_portfolios:
+                    logger.info("  %-12s $%9.2f  P&L $%+9.2f  %d bets  %.0f%% win",
+                                p.trader_id, p.portfolio_value, p.total_pnl, p.total_bets, p.win_rate * 100)
+        except Exception:
+            pass

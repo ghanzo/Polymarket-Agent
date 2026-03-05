@@ -481,11 +481,14 @@ class TestQuantAgent:
 
     def test_buy_no_on_bearish(self):
         """Strong bearish signals → BUY_NO."""
-        # Very strong downward drift + heavy ask imbalance
-        prices = [0.80, 0.75, 0.65, 0.55, 0.45, 0.35]
+        # Sharp decline from spike: last-7 window [0.85→0.50] gives max-strength
+        # bearish momentum.  Low initial prices keep mean reversion weak.  Heavy
+        # ask-side book gives bearish liquidity.  2 bearish > 1 opposing, edge
+        # ~0.10, confidence well above 0.60.
+        prices = [0.35, 0.37, 0.85, 0.78, 0.72, 0.65, 0.58, 0.53, 0.50]
         book = {
-            "bids": [{"price": "0.49", "size": "500"}],
-            "asks": [{"price": "0.51", "size": "8000"}, {"price": "0.52", "size": "5000"}],
+            "bids": [{"price": "0.49", "size": "200"}],
+            "asks": [{"price": "0.51", "size": "10000"}, {"price": "0.52", "size": "8000"}],
         }
         m = _make_market(
             midpoint=0.50,

@@ -6,9 +6,14 @@ from datetime import datetime, timezone
 from enum import Enum
 
 
+class MarketSystem(str, Enum):
+    POLYMARKET = "polymarket"
+    STOCK = "stock"
+
+
 class Side(str, Enum):
-    YES = "YES"
-    NO = "NO"
+    YES = "YES"   # Also used as LONG for stocks
+    NO = "NO"     # Also used as SHORT for stocks
 
 
 class Recommendation(str, Enum):
@@ -25,6 +30,8 @@ class BetStatus(str, Enum):
 
 
 TRADER_IDS = ["claude", "grok", "gemini", "ensemble", "quant"]
+STOCK_TRADER_IDS = ["stock_quant"]
+ALL_TRADER_IDS = TRADER_IDS + STOCK_TRADER_IDS
 
 
 @dataclass
@@ -43,11 +50,18 @@ class Market:
     spread: float | None = None
     price_history: list[dict] | None = None
     price_history_daily: list[dict] | None = None
+    price_history_hourly: list[dict] | None = None
     order_book: dict | None = None
     event_id: str | None = None
     event_title: str | None = None
     related_markets: list[dict] | None = None
     created_at: str | None = None
+    # Stock-specific fields
+    market_system: str = "polymarket"
+    symbol: str | None = None
+    ohlcv: list[dict] | None = None
+    sector: str | None = None
+    theme_scores: dict | None = None
 
     @classmethod
     def from_api(cls, data: dict) -> Market:
@@ -71,6 +85,35 @@ class Market:
     def from_cli(cls, data: dict) -> Market:
         """Backward-compatible alias for from_api."""
         return cls.from_api(data)
+
+    @classmethod
+    def from_alpaca(cls, symbol: str, bars: list[dict], quote: dict | None = None,
+                    sector: str | None = None, theme_scores: dict | None = None) -> Market:
+        """Create a Market from Alpaca bar/quote data for stock trading."""
+        current_price = None
+        if quote and quote.get("ap") and quote.get("bp"):
+            current_price = (quote["ap"] + quote["bp"]) / 2.0
+        elif bars:
+            current_price = bars[-1].get("c")  # last close
+
+        return cls(
+            id=f"stock_{symbol}",
+            question=f"Stock: {symbol}",
+            description=f"Stock position in {symbol}",
+            outcomes=["LONG", "SHORT"],
+            token_ids=[symbol, symbol],
+            end_date=None,
+            active=True,
+            volume=str(sum(b.get("v", 0) for b in bars[-5:])) if bars else "0",
+            liquidity=str(bars[-1].get("v", 0)) if bars else "0",
+            midpoint=current_price,
+            spread=abs(quote["ap"] - quote["bp"]) / current_price if quote and current_price and quote.get("ap") and quote.get("bp") else None,
+            ohlcv=bars,
+            market_system="stock",
+            symbol=symbol,
+            sector=sector,
+            theme_scores=theme_scores,
+        )
 
 
 @dataclass
@@ -203,6 +246,33 @@ def kelly_size(
     kelly_f *= fraction
 
     # Cap at max bet percentage
+    kelly_f = min(kelly_f, max_bet_pct)
+
+    bet_amount = round(kelly_f * bankroll, 2)
+    return max(bet_amount, 0.0)
+
+
+def kelly_size_stock(
+    expected_return: float,
+    volatility: float,
+    bankroll: float,
+    max_bet_pct: float = 0.10,
+    fraction: float = 0.25,
+) -> float:
+    """Kelly criterion for continuous-return assets (stocks).
+
+    kelly_f = expected_return / volatility^2
+    Position size = kelly_f * fraction * bankroll
+
+    expected_return: annualized expected return (e.g., 0.10 for 10%)
+    volatility: annualized volatility (e.g., 0.30 for 30%)
+    fraction: Kelly fraction (0.25 = quarter-Kelly, conservative)
+    """
+    if volatility <= 1e-10 or expected_return <= 0:
+        return 0.0
+
+    kelly_f = expected_return / (volatility ** 2)
+    kelly_f *= fraction
     kelly_f = min(kelly_f, max_bet_pct)
 
     bet_amount = round(kelly_f * bankroll, 2)

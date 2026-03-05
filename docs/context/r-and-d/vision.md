@@ -6,9 +6,35 @@
 
 ## Project Purpose
 
-A paper trading simulation platform for Polymarket prediction markets that uses multi-model AI analysis to identify edges, manage risk, and learn from outcomes — with the goal of transitioning to validated real-money trading.
+A **dual-market paper trading platform** — Polymarket prediction markets and stock market equities — that uses multi-model AI analysis and quantitative signals to identify edges, manage risk, and learn from outcomes. The goal is transitioning to validated real-money trading on both platforms.
 
 **The journey**: Paper trade → prove edge → harden testing → deploy real capital.
+
+**Two markets, one codebase**: Polymarket and stocks run simultaneously with independent portfolios ($1000 each), enabling direct cross-market performance comparison.
+
+---
+
+## Stock Market Strategy
+
+### Macro Thesis (User Conviction)
+Five themes drive *what* to buy. Quant signals determine *when* and *how much*.
+
+| Theme | Weight | Thesis |
+|-------|--------|--------|
+| Peak Oil | 20% | Supply constraints drive energy prices higher |
+| Rise of China | 20% | Economic rebalancing, US relative decline |
+| AI Black Swan | 25% | Transformative winner-take-most dynamics |
+| New Energy | 20% | Nuclear renaissance, grid modernization |
+| Critical Materials | 15% | Copper, lithium, rare earths for energy transition |
+
+### Two-Layer Approach
+1. **Macro conviction (static)**: Theme weights × ticker conviction → determines universe and sizing bias
+2. **Quant signals (dynamic)**: RSI, Bollinger, VWAP, momentum, sector relative strength → determines entry timing and position sizing
+
+### API: Alpaca Markets
+- Free paper trading with identical API to live trading
+- Transition to real money: flip `paper=True` → `paper=False`
+- Commission-free stock trading
 
 ---
 
@@ -48,7 +74,7 @@ LLM ensemble analysis and quantitative signals are complementary, not competing.
 
 - **Not HFT**: We analyze markets on 5-minute cycles, not microseconds. Sub-second execution is not a goal (though WebSocket feeds will improve from minutes to seconds).
 - **Not market-making**: We take directional positions based on perceived mispricings, not providing liquidity for spread capture.
-- **Not multi-platform**: We focus on Polymarket only. Cross-platform arbitrage (Kalshi, etc.) is aspirational, not planned.
+- **Not crypto exchanges**: We trade Polymarket + stocks via Alpaca. Cross-platform arbitrage (Kalshi, etc.) and crypto exchanges are not planned.
 - **Not replacing LLMs with quant**: The quant agent complements the LLM pipeline — it provides independent alpha from pure math. Eventually the best quant components (particle filter, copula risk) will be integrated into the LLM pipeline as enhancements, not replacements.
 - **Not autonomous**: The system recommends and executes paper trades, but real-money deployment requires human oversight and explicit activation.
 
@@ -56,12 +82,22 @@ LLM ensemble analysis and quantitative signals are complementary, not competing.
 
 ## Current Grade: A-
 
+### Polymarket
 | Dimension | Grade | Notes |
 |-----------|-------|-------|
 | Signal Quality | A | Multi-model ensemble, debate, calibration, longshot bias |
 | Risk Management | A- | Kelly sizing, trailing stops, drawdown limits, slippage. Fee bug fixed 2026-03-03. |
 | Architecture | A- | Modular, concurrent, well-split responsibilities |
-| Testing | B+ | 844 tests, Phase T1 (lifecycle) + T2 (property-based) done. Gaps: real DB, simulator direct tests. |
+| Testing | B+ | 1051 tests, Phase T1-T4 done. Gaps: real DB integration. |
 | Data Pipeline | B+ | ML pre-screening, but still HTTP polling (no WebSocket) |
 
-Target: **A+** — requires testing hardened to A, WebSocket real-time data.
+### Stock Market
+| Dimension | Grade | Notes |
+|-----------|-------|-------|
+| Signal Quality | N/A | Phase S2 — 6 log-return-space signal detectors |
+| Risk Management | N/A | Phase S3 — sector limits, trailing stops, drawdown |
+| Architecture | N/A | Phase S1 — `src/stock/` package |
+| Testing | N/A | Phase S4 — ~155 new tests planned |
+| Data Pipeline | N/A | Phase S1 — Alpaca REST API |
+
+Target: **A+** — requires testing hardened to A, WebSocket real-time data, stock system validated.
