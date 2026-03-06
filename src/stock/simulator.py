@@ -194,7 +194,8 @@ class StockSimulator:
                 pass
 
             # Check minimum hold time
-            age = (datetime.now(timezone.utc) - bet.placed_at).total_seconds()
+            placed = bet.placed_at.replace(tzinfo=timezone.utc) if bet.placed_at.tzinfo is None else bet.placed_at
+            age = (datetime.now(timezone.utc) - placed).total_seconds()
             if age < config.SIM_MIN_HOLD_SECONDS:
                 continue
 

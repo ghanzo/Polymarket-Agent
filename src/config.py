@@ -224,7 +224,7 @@ class Config:
     STOCK_CYCLE_INTERVAL: int = int(os.getenv("STOCK_CYCLE_INTERVAL", "900"))
     STOCK_MAX_POSITIONS: int = int(os.getenv("STOCK_MAX_POSITIONS", "20"))
     STOCK_MAX_SECTOR_PCT: float = float(os.getenv("STOCK_MAX_SECTOR_PCT", "0.30"))
-    STOCK_MIN_CONFIDENCE: float = float(os.getenv("STOCK_MIN_CONFIDENCE", "0.55"))
+    STOCK_MIN_CONFIDENCE: float = float(os.getenv("STOCK_MIN_CONFIDENCE", "0.25"))
 
     # Theme weights (user's macro conviction — must sum to ~1.0)
     STOCK_THEME_PEAK_OIL: float = float(os.getenv("STOCK_THEME_PEAK_OIL", "0.20"))

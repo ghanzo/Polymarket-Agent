@@ -115,7 +115,7 @@ class StockScanner:
             for i in range(0, len(symbols), batch_size):
                 batch = symbols[i : i + batch_size]
                 try:
-                    bars_multi = self._api.get_bars_multi(batch, timeframe="1Day", limit=60)
+                    bars_multi = self._api.get_bars_multi(batch, timeframe="1Day", limit=10000)
                     for sym, bars in bars_multi.items():
                         if bars:
                             result[sym] = {"bars": bars, "quote": None}
@@ -124,7 +124,7 @@ class StockScanner:
                     # Fall back to individual fetches
                     for sym in batch:
                         try:
-                            bars = self._api.get_bars(sym, timeframe="1Day", limit=60)
+                            bars = self._api.get_bars(sym, timeframe="1Day", limit=10000)
                             if bars:
                                 result[sym] = {"bars": bars, "quote": None}
                         except Exception:

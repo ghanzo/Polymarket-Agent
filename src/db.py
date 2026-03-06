@@ -292,7 +292,7 @@ def _add_constraints_and_keys(conn):
     with conn.cursor() as cur:
         for table, name, check_expr in [
             ("bets", "chk_amount_positive", "amount > 0"),
-            ("bets", "chk_price_range", "entry_price BETWEEN 0 AND 1"),
+            ("bets", "chk_price_range", "entry_price > 0"),
             ("bets", "chk_shares_positive", "shares > 0"),
             ("portfolio", "chk_balance_non_negative", "balance >= 0"),
             ("analysis_log", "chk_confidence_range", "confidence BETWEEN 0 AND 1"),

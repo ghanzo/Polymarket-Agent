@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -119,8 +120,10 @@ class AlpacaAPI:
         start/end: RFC3339 timestamps or YYYY-MM-DD
         """
         params: dict = {"timeframe": timeframe, "limit": limit}
-        if start:
-            params["start"] = start
+        # Alpaca requires explicit start date or returns empty
+        if not start:
+            start = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
+        params["start"] = start
         if end:
             params["end"] = end
         result = self._data(f"/v2/stocks/{symbol}/bars", params=params)
@@ -145,8 +148,10 @@ class AlpacaAPI:
             "timeframe": timeframe,
             "limit": limit,
         }
-        if start:
-            params["start"] = start
+        # Alpaca requires explicit start date or returns empty
+        if not start:
+            start = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
+        params["start"] = start
         if end:
             params["end"] = end
         result = self._data("/v2/stocks/bars", params=params)
