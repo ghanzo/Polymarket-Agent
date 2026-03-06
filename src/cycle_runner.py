@@ -193,7 +193,9 @@ def run_cycle(
                     cycle_number=cycle_number or 0,
                     on_status=_status,
                 )
-                result.bets_by_trader["stock_quant"] = stock_result.trades_placed
+                result.bets_by_trader["stock_quant"] = stock_result.trades_by_trader.get("stock_quant", stock_result.trades_placed)
+                if "stock_grok" in stock_result.trades_by_trader:
+                    result.bets_by_trader["stock_grok"] = stock_result.trades_by_trader["stock_grok"]
                 logger.info(
                     "[STOCK] scanned=%d signals=%d trades=%d closed=%d",
                     stock_result.stocks_scanned, stock_result.signals_computed,

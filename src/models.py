@@ -30,7 +30,7 @@ class BetStatus(str, Enum):
 
 
 TRADER_IDS = ["claude", "grok", "gemini", "ensemble", "quant"]
-STOCK_TRADER_IDS = ["stock_quant"]
+STOCK_TRADER_IDS = ["stock_quant", "stock_grok"]
 ALL_TRADER_IDS = TRADER_IDS + STOCK_TRADER_IDS
 
 

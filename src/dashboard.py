@@ -40,6 +40,12 @@ def _enrich_analysis(a: dict) -> dict:
                 pipeline["quant_adj"] = extras["quant_adj"]
             if "final_est_prob" in extras:
                 pipeline["final"] = extras["final_est_prob"]
+        elif extras.get("agent") == "stock_grok":
+            # Stock Grok: LLM analysis with quant context
+            pipeline = {}
+            if extras.get("quant_confidence") is not None:
+                pipeline["raw"] = extras.get("quant_confidence")
+            pipeline["final"] = a.get("estimated_probability")
         else:
             pipeline = {"raw": extras.get("raw_est_prob")}
             if "calibrated_prob" in extras:
@@ -55,8 +61,8 @@ def _enrich_analysis(a: dict) -> dict:
                 pipeline["final"] = extras["final_est_prob"]
     a["prob_pipeline"] = pipeline
 
-    # Strategy signals
-    a["signals"] = extras.get("signals", [])
+    # Strategy signals (stock_grok stores them as quant_signals)
+    a["signals"] = extras.get("signals", []) or extras.get("quant_signals", [])
 
     # Model agreement (ensemble)
     model_votes = extras.get("model_votes")

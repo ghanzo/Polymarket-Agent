@@ -178,6 +178,7 @@
         .tag-ensemble { background: #fbbf2422; color: #fbbf24; }
         .tag-quant { background: #10b98122; color: #10b981; }
         .tag-stock_quant { background: #f59e0b22; color: #f59e0b; }
+        .tag-stock_grok { background: #f4364c22; color: #f4364c; }
 
         /* Analysis log */
         .analysis-item {
@@ -286,6 +287,7 @@
         .trader-pill.active.tag-ensemble { background: #fbbf2422; color: #fbbf24; border-color: #fbbf24; }
         .trader-pill.active.tag-quant { background: #10b98122; color: #10b981; border-color: #10b981; }
         .trader-pill.active.tag-stock_quant { background: #f59e0b22; color: #f59e0b; border-color: #f59e0b; }
+        .trader-pill.active.tag-stock_grok { background: #f4364c22; color: #f4364c; border-color: #f4364c; }
         .setting-saved {
             color: #4ade80; font-size: 11px; opacity: 0; transition: opacity 0.3s;
             margin-left: 8px;
@@ -509,7 +511,7 @@
                 <div class="setting-item">
                     <label>Active Traders</label>
                     <div class="trader-toggles">
-                        {% for tid in ["grok", "ensemble", "quant", "stock_quant"] %}
+                        {% for tid in ["grok", "ensemble", "quant", "stock_quant", "stock_grok"] %}
                         <button class="trader-pill tag-{{ tid }} {{ 'active' if tid not in config.paused_traders else '' }}"
                                 data-trader="{{ tid }}" onclick="toggleTrader('{{ tid }}', this)">
                             {{ tid }}
@@ -811,10 +813,10 @@
             <div class="leaderboard-grid">
                 {% for p in stock_portfolios %}
                 {% set ts = trader_details.get(p.trader_id, {}) %}
-                <div class="trader-card" style="border-color: #f59e0b44;">
+                <div class="trader-card" style="border-color: {% if p.trader_id == 'stock_grok' %}#f4364c44{% else %}#f59e0b44{% endif %};">
                     <div class="trader-name">
                         {{ p.trader_id }}
-                        <div class="model-sub">Log-Return Signals + Macro Themes</div>
+                        <div class="model-sub">{% if p.trader_id == 'stock_grok' %}Grok LLM + Quant Signals{% else %}Log-Return Signals + Macro Themes{% endif %}</div>
                     </div>
                     <div class="agent-status">
                         <span class="status-dot {{ ts.get('status', 'idle') }}"></span>
@@ -859,6 +861,7 @@
                 <table>
                     <thead>
                         <tr>
+                            <th>Trader</th>
                             <th>Symbol</th>
                             <th>Side</th>
                             <th>Amount</th>
@@ -872,7 +875,8 @@
                     <tbody>
                     {% for bet in stock_bets %}
                         <tr>
-                            <td style="font-weight: 700; color: #f59e0b;">{{ bet.token_id }}</td>
+                            <td><span class="trader-tag tag-{{ bet.trader_id }}">{{ bet.trader_id }}</span></td>
+                            <td style="font-weight: 700;">{{ bet.token_id }}</td>
                             <td class="side-{{ bet.side.value|lower }}">{{ "LONG" if bet.side.value == "YES" else "SHORT" }}</td>
                             <td>${{ "%.2f"|format(bet.amount) }}</td>
                             <td>${{ "%.2f"|format(bet.entry_price) }}</td>
@@ -1188,7 +1192,8 @@
             gemini: '#4285f4',
             ensemble: '#fbbf24',
             quant: '#10b981',
-            stock_quant: '#f59e0b'
+            stock_quant: '#f59e0b',
+            stock_grok: '#f4364c'
         };
 
         async function loadChart() {

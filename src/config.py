@@ -226,6 +226,11 @@ class Config:
     STOCK_MAX_SECTOR_PCT: float = float(os.getenv("STOCK_MAX_SECTOR_PCT", "0.30"))
     STOCK_MIN_CONFIDENCE: float = float(os.getenv("STOCK_MIN_CONFIDENCE", "0.25"))
 
+    # Stock Grok LLM agent
+    STOCK_GROK_ENABLED: bool = os.getenv("STOCK_GROK_ENABLED", "true").lower() == "true"
+    STOCK_GROK_MIN_CONFIDENCE: float = float(os.getenv("STOCK_GROK_MIN_CONFIDENCE", "0.40"))
+    STOCK_GROK_TOP_N: int = int(os.getenv("STOCK_GROK_TOP_N", "10"))
+
     # Theme weights (user's macro conviction — must sum to ~1.0)
     STOCK_THEME_PEAK_OIL: float = float(os.getenv("STOCK_THEME_PEAK_OIL", "0.20"))
     STOCK_THEME_CHINA_RISE: float = float(os.getenv("STOCK_THEME_CHINA_RISE", "0.20"))
