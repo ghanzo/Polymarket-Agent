@@ -556,7 +556,9 @@ class TestPlaceBetSideLogic:
         mock_db.calibrate_probability.return_value = 0.75
         mock_db.save_bet.return_value = 1
 
-        sim = Simulator(cli=MagicMock(), trader_id="test")
+        cli = MagicMock()
+        cli.clob_midpoint.return_value = {"midpoint": "0.60"}
+        sim = Simulator(cli=cli, trader_id="test")
         bet = sim.place_bet(market, analysis)
 
         assert bet is not None
@@ -586,7 +588,9 @@ class TestPlaceBetSideLogic:
         mock_db.calibrate_probability.return_value = 0.25
         mock_db.save_bet.return_value = 1
 
-        sim = Simulator(cli=MagicMock(), trader_id="test")
+        cli = MagicMock()
+        cli.clob_midpoint.return_value = {"midpoint": "0.60"}
+        sim = Simulator(cli=cli, trader_id="test")
         bet = sim.place_bet(market, analysis)
 
         assert bet is not None
@@ -617,7 +621,9 @@ class TestPlaceBetSideLogic:
         mock_db.calibrate_probability.return_value = 0.75
         mock_db.save_bet.return_value = 1
 
-        sim = Simulator(cli=MagicMock(), trader_id="test")
+        cli = MagicMock()
+        cli.clob_midpoint.return_value = {"midpoint": "0.60"}
+        sim = Simulator(cli=cli, trader_id="test")
         bet = sim.place_bet(market, analysis)
 
         assert bet is not None
@@ -738,7 +744,9 @@ class TestSpreadCostAccounting:
         mock_db.calibrate_probability.return_value = 0.70
         mock_db.save_bet.return_value = 1
 
-        sim = Simulator(cli=MagicMock(), trader_id="t")
+        cli = MagicMock()
+        cli.clob_midpoint.return_value = {"midpoint": "0.50"}
+        sim = Simulator(cli=cli, trader_id="t")
         bet = sim.place_bet(market, analysis)
 
         assert bet is not None
@@ -765,7 +773,9 @@ class TestSpreadCostAccounting:
         mock_db.calibrate_probability.return_value = 0.25
         mock_db.save_bet.return_value = 1
 
-        sim = Simulator(cli=MagicMock(), trader_id="t")
+        cli = MagicMock()
+        cli.clob_midpoint.return_value = {"midpoint": "0.60"}
+        sim = Simulator(cli=cli, trader_id="t")
         bet = sim.place_bet(market, analysis)
 
         assert bet is not None
@@ -799,7 +809,9 @@ class TestSpreadCostAccounting:
         mock_db.calibrate_probability.return_value = 0.70
         mock_db.save_bet.return_value = 1
 
-        sim = Simulator(cli=MagicMock(), trader_id="t")
+        cli = MagicMock()
+        cli.clob_midpoint.return_value = {"midpoint": "0.50"}
+        sim = Simulator(cli=cli, trader_id="t")
 
         bet_spread = sim.place_bet(market_spread, analysis)
         mock_db.has_open_bet_on_market.return_value = False  # Reset for second call
@@ -830,7 +842,9 @@ class TestSpreadCostAccounting:
         mock_db.calibrate_probability.return_value = 0.70
         mock_db.save_bet.return_value = 1
 
-        sim = Simulator(cli=MagicMock(), trader_id="t")
+        cli = MagicMock()
+        cli.clob_midpoint.return_value = {"midpoint": "0.50"}
+        sim = Simulator(cli=cli, trader_id="t")
         bet = sim.place_bet(market, analysis)
 
         assert bet is not None

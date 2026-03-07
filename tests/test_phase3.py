@@ -485,7 +485,9 @@ class TestSimulatorPlattIntegration:
         mock_db.calibrate_probability.return_value = 0.70
         mock_db.save_bet.return_value = 1
 
-        sim = Simulator(MagicMock(), "grok")
+        cli = MagicMock()
+        cli.clob_midpoint.return_value = {"midpoint": "0.60"}
+        sim = Simulator(cli, "grok")
         market = make_market(midpoint=0.60, spread=0.04)
         analysis = make_analysis(prob=0.70, conf=0.80)
 

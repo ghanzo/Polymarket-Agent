@@ -379,7 +379,7 @@ class TestPlaceBetSlippage:
         mock_db.get_portfolio.return_value = _portfolio()
         mock_db.get_daily_realized_pnl.return_value = 0.0
         mock_db.calibrate_probability.return_value = 0.80
-        sim._get_live_midpoint = MagicMock(return_value=None)
+        sim._get_live_midpoint = MagicMock(return_value=0.60)
 
         with patch("src.learning.apply_platt_scaling", side_effect=lambda p, t: p):
             with patch("src.strategies.compute_all_signals", return_value=[]):
@@ -394,7 +394,7 @@ class TestPlaceBetSlippage:
         mock_db.get_portfolio.return_value = _portfolio()
         mock_db.get_daily_realized_pnl.return_value = 0.0
         mock_db.calibrate_probability.return_value = 0.80
-        sim._get_live_midpoint = MagicMock(return_value=None)
+        sim._get_live_midpoint = MagicMock(return_value=0.60)
 
         with patch("src.learning.apply_platt_scaling", side_effect=lambda p, t: p):
             with patch("src.strategies.compute_all_signals", return_value=[]):
@@ -414,7 +414,7 @@ class TestPlaceBetFullSuccess:
         mock_db.get_daily_realized_pnl.return_value = 0.0
         mock_db.calibrate_probability.return_value = 0.80
         mock_db.save_bet.return_value = 42
-        sim._get_live_midpoint = MagicMock(return_value=None)
+        sim._get_live_midpoint = MagicMock(return_value=0.60)
 
         with patch("src.learning.apply_platt_scaling", side_effect=lambda p, t: p):
             with patch("src.strategies.compute_all_signals", return_value=[]):
@@ -439,7 +439,7 @@ class TestPlaceBetFullSuccess:
         mock_db.get_daily_realized_pnl.return_value = 0.0
         mock_db.calibrate_probability.return_value = 0.25
         mock_db.save_bet.return_value = 43
-        sim._get_live_midpoint = MagicMock(return_value=None)
+        sim._get_live_midpoint = MagicMock(return_value=0.40)
 
         with patch("src.learning.apply_platt_scaling", side_effect=lambda p, t: p):
             with patch("src.strategies.compute_all_signals", return_value=[]):
@@ -462,7 +462,7 @@ class TestPlaceBetFullSuccess:
         mock_db.get_daily_realized_pnl.return_value = 0.0
         mock_db.calibrate_probability.return_value = 0.80
         mock_db.save_bet.return_value = 1
-        sim._get_live_midpoint = MagicMock(return_value=None)
+        sim._get_live_midpoint = MagicMock(return_value=0.60)
 
         analysis = _analysis(est_prob=0.80, extras={"model_votes": {"claude": "BUY_YES"}})
         with patch("src.learning.apply_platt_scaling", side_effect=lambda p, t: p):

@@ -64,16 +64,21 @@ class Simulator:
         # Stale price guard: re-fetch live midpoint and reject if price drifted
         # since enrichment (prevents phantom profits on fast-moving sports markets)
         live_midpoint = self._get_live_midpoint(token_id)
-        if live_midpoint is not None:
-            drift = abs(live_midpoint - midpoint)
-            if drift > config.SIM_STALE_PRICE_THRESHOLD:
-                logger.info("Stale price: enriched=%.3f live=%.3f drift=%.3f (>%.3f), skipping %s",
-                            midpoint, live_midpoint, drift, config.SIM_STALE_PRICE_THRESHOLD,
-                            market.question[:45])
-                return None
-            # Use fresh price for all downstream calculations
-            midpoint = live_midpoint
-            spread = market.spread or 0.0  # spread not re-fetched, keep enrichment value
+        if live_midpoint is None:
+            # CLOB API returned 404 or error — market is likely resolved/inactive.
+            # Reject to prevent placing bets on already-settled markets.
+            logger.info("No live midpoint for %s (likely resolved), skipping %s",
+                        token_id[:12], market.question[:45])
+            return None
+        drift = abs(live_midpoint - midpoint)
+        if drift > config.SIM_STALE_PRICE_THRESHOLD:
+            logger.info("Stale price: enriched=%.3f live=%.3f drift=%.3f (>%.3f), skipping %s",
+                        midpoint, live_midpoint, drift, config.SIM_STALE_PRICE_THRESHOLD,
+                        market.question[:45])
+            return None
+        # Use fresh price for all downstream calculations
+        midpoint = live_midpoint
+        spread = market.spread or 0.0  # spread not re-fetched, keep enrichment value
 
         # Probability adjustment pipeline (merge into existing extras from analyzer)
         extras: dict = dict(analysis.extras) if analysis.extras else {}

@@ -106,6 +106,8 @@ class TestSimulatorExtrasCapture:
         market = _make_market(midpoint=0.5, spread=0.02)
         analysis = _make_analysis(estimated_probability=0.7, confidence=0.8)
         cli = MagicMock()
+        # clob_midpoint must return a valid price so stale-price guard passes
+        cli.clob_midpoint.return_value = {"midpoint": "0.50"}
 
         with patch("src.simulator.config") as mock_config:
             mock_config.SIM_ENSEMBLE_MIN_CONFIDENCE = 0.4
@@ -121,6 +123,7 @@ class TestSimulatorExtrasCapture:
             mock_config.SIM_MAX_BET_PCT = 0.05
             mock_config.SIM_KELLY_FRACTION = 0.25
             mock_config.MAX_SLIPPAGE_BPS = 200
+            mock_config.SIM_STALE_PRICE_THRESHOLD = 0.10
 
             sim = Simulator(cli, "grok")
             bet = sim.place_bet(market, analysis)
