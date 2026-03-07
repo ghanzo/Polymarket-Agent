@@ -88,11 +88,15 @@ class Market:
 
     @classmethod
     def from_alpaca(cls, symbol: str, bars: list[dict], quote: dict | None = None,
-                    sector: str | None = None, theme_scores: dict | None = None) -> Market:
+                    sector: str | None = None, theme_scores: dict | None = None,
+                    latest_trade: dict | None = None) -> Market:
         """Create a Market from Alpaca bar/quote data for stock trading."""
         current_price = None
-        if quote and quote.get("ap") and quote.get("bp"):
+        # Priority: quote mid > latestTrade > last bar close
+        if quote and quote.get("ap") and quote.get("bp") and quote["ap"] > 0 and quote["bp"] > 0:
             current_price = (quote["ap"] + quote["bp"]) / 2.0
+        elif latest_trade and latest_trade.get("p") and latest_trade["p"] > 0:
+            current_price = latest_trade["p"]
         elif bars:
             current_price = bars[-1].get("c")  # last close
 

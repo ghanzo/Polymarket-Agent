@@ -225,6 +225,7 @@ class Config:
     STOCK_MAX_POSITIONS: int = int(os.getenv("STOCK_MAX_POSITIONS", "20"))
     STOCK_MAX_SECTOR_PCT: float = float(os.getenv("STOCK_MAX_SECTOR_PCT", "0.30"))
     STOCK_MIN_CONFIDENCE: float = float(os.getenv("STOCK_MIN_CONFIDENCE", "0.25"))
+    STOCK_REENTRY_COOLDOWN_HOURS: float = float(os.getenv("STOCK_REENTRY_COOLDOWN_HOURS", "6.0"))
 
     # Stock Grok LLM agent
     STOCK_GROK_ENABLED: bool = os.getenv("STOCK_GROK_ENABLED", "true").lower() == "true"

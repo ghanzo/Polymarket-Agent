@@ -130,13 +130,17 @@ class StockScanner:
                         except Exception:
                             pass
 
-            # Fetch quotes for symbols with bars
+            # Fetch snapshots for live pricing
             if result:
                 try:
                     snapshots = self._api.get_snapshots(list(result.keys())[:100])
                     for sym, snap in snapshots.items():
                         if sym in result:
-                            result[sym]["quote"] = snap.get("latestQuote") or snap.get("latest_quote")
+                            quote = snap.get("latestQuote") or snap.get("latest_quote")
+                            result[sym]["quote"] = quote
+                            # Store latestTrade as fallback price source
+                            lt = snap.get("latestTrade") or snap.get("latest_trade")
+                            result[sym]["latest_trade"] = lt
                 except Exception as e:
                     logger.debug("Snapshot fetch failed: %s", e)
         else:
@@ -202,6 +206,7 @@ class StockScanner:
             quote=quote,
             sector=sectors[0] if sectors else None,
             theme_scores=theme_scores or None,
+            latest_trade=data.get("latest_trade"),
         )
 
         return market

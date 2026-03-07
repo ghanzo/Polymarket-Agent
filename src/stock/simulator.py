@@ -74,6 +74,15 @@ class StockSimulator:
         except Exception:
             pass
 
+        # Re-entry cooldown: don't re-buy a stock that was recently exited
+        try:
+            cooldown_hours = config.STOCK_REENTRY_COOLDOWN_HOURS
+            if cooldown_hours > 0 and self._recently_exited(db, market.id, cooldown_hours):
+                logger.debug("Re-entry cooldown active for %s (%.1fh)", market.symbol, cooldown_hours)
+                return None
+        except Exception:
+            pass
+
         # Kelly sizing
         expected_return = analysis.confidence * 0.1  # scale confidence to expected annual return
         volatility = self._estimate_volatility(market)
@@ -330,6 +339,23 @@ class StockSimulator:
 
         return True
 
+    def _recently_exited(self, db, market_id: str, cooldown_hours: float) -> bool:
+        """Check if we recently closed/exited a position on this market."""
+        try:
+            conn = db._get_conn()
+            cur = conn.cursor()
+            cur.execute(
+                """SELECT 1 FROM bets
+                   WHERE trader_id = %s AND market_id = %s
+                     AND status IN ('EXITED', 'WON', 'LOST')
+                     AND resolved_at > NOW() - interval '1 hour' * %s
+                   LIMIT 1""",
+                (self.trader_id, market_id, cooldown_hours),
+            )
+            return cur.fetchone() is not None
+        except Exception:
+            return False
+
     def _estimate_volatility(self, market: Market) -> float:
         """Estimate annualized volatility from OHLCV bars."""
         bars = market.ohlcv or []
@@ -376,19 +402,39 @@ class StockSimulator:
             return 50.0  # illiquid
 
     def _get_current_price(self, symbol: str, api=None) -> float | None:
-        """Get current price for a symbol."""
+        """Get current price for a symbol.
+
+        Priority: snapshot latestTrade > quote mid > last daily bar close.
+        """
         if api:
+            # Try snapshot first — gives latestTrade, dailyBar, and quote in one call
             try:
-                quote = api.get_latest_quote(symbol)
-                if quote.get("ap") and quote.get("bp"):
-                    return (quote["ap"] + quote["bp"]) / 2.0
+                snap = api.get_snapshot(symbol)
+                # latestTrade is the most reliable price
+                lt = snap.get("latestTrade") or snap.get("latest_trade")
+                if lt and lt.get("p") and lt["p"] > 0:
+                    return lt["p"]
+                # Fallback to dailyBar close
+                db = snap.get("dailyBar") or snap.get("daily_bar")
+                if db and db.get("c") and db["c"] > 0:
+                    return db["c"]
             except Exception:
                 pass
 
+            # Try quote (bid/ask mid)
             try:
-                bars = api.get_bars(symbol, timeframe="1Day", limit=1)
+                quote = api.get_latest_quote(symbol)
+                ap, bp = quote.get("ap", 0), quote.get("bp", 0)
+                if ap and bp and ap > 0 and bp > 0:
+                    return (ap + bp) / 2.0
+            except Exception:
+                pass
+
+            # Last resort: fetch recent bars and use the LAST (most recent) close
+            try:
+                bars = api.get_bars(symbol, timeframe="1Day", limit=5)
                 if bars:
-                    return bars[-1].get("c")
+                    return bars[-1].get("c")  # bars are ascending — last = most recent
             except Exception:
                 pass
 
